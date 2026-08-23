@@ -28,7 +28,10 @@ Use `D:\自动剪辑` as the default working root. If the user does not provide 
 - Use Chrome control only when the user explicitly needs signed-in browser state. Use `--cookies-from-browser` only after explicit authorization.
 - Before writing or revising any voiceover, read `vendor/blader-humanizer/SKILL.md` completely and apply its Embedded mode. This humanization pass is mandatory, including single-topic drafts, batch generation, and rewrites.
 - Use the image-generation skill for all raster cover generation and edits. Load the relevant master cover from `assets/` as a style reference.
-- Use `scripts/download_from_manifest.ps1` for repeatable Windows batch downloads.
+- Use `scripts/download_from_manifest.ps1` for repeatable Windows batch downloads. It supports status-machine resume (skips `ready`-marked or previously complete rows), optional aria2c multi-connection acceleration, and optional PowerShell 7 parallel rows (`-Parallel N`).
+- If a topic folder has a video but no usable SRT, run `scripts/transcribe.py` as the local ASR fallback: it extracts audio with ffmpeg and writes `字幕.srt` (FunASR preferred for Chinese, faster-whisper already installed; resumes automatically by skipping folders that already have subtitles).
+- Use `scripts/validate_subtitles.py` to check SRT syntax, time-axis order, and subtitle-video alignment drift before writing the voiceover.
+- Use `scripts/peer_hit_library.py` to learn from peer hit documentary titles and tags: run `--patterns` before writing `发布信息.txt` to see which hook pattern performs best, and `--import`/`--add` to feed observed hits and own post-publish results back into the library so the ranking keeps evolving.
 - Use `scripts/validate_publication_info.py` to recursively audit publication files, including topic folders nested under archive directories such as `@已发`.
 - Use `scripts/validate_deliverables.py` for the final folder audit.
 
@@ -81,11 +84,32 @@ powershell -ExecutionPolicy Bypass -File scripts/download_from_manifest.ps1 `
   -OutputRoot <output-root>
 ```
 
+Optional P1 hardening flags (all backward compatible):
+
+- `-UseAria2 -Aria2Connections 8` — aria2c multi-connection per file (auto-detected; install with `winget install aria2.aria2`). Falls back to yt-dlp built-in concurrent fragments when aria2c is missing.
+- `-Parallel 4` — process up to N topics concurrently (requires PowerShell 7+; falls back to sequential with a warning on 5.1).
+- `-Trace` — print every yt-dlp command for debugging.
+- Manifest rows with `status=ready` are skipped; rows already complete in `下载状态.csv` are skipped when files still exist. Interrupted batches resume from verified files — rerun the same command to continue.
+
 Prefer manual English subtitles, then automatic English, then another available language. Keep the original URL and metadata in the manifest. Do not defeat DRM, paywalls, regional access controls, or platform security.
+
+### 5.5 Local ASR fallback transcription
+
+If a topic folder has a playable video but no usable SRT (YouTube has no caption track, or caption download failed), generate the subtitle locally instead of blocking the topic:
+
+```powershell
+python scripts/transcribe.py <output-root> [--manifest <manifest.csv>] `
+  --ffmpeg-location "C:\Users\<user>\ffmpeg\ffmpeg-8.1.1-essentials_build\bin"
+```
+
+- Backend `auto` prefers FunASR (`paraformer-zh`, best Chinese accuracy; install once with `pip install funasr`), otherwise uses the already-installed faster-whisper (`--model-size` default `medium`; use `large-v3` for quality on overnight runs). CPU int8 works on this machine; no GPU required.
+- Models download automatically via the `hf-mirror.com` endpoint (set in the script), so no manual HuggingFace setup is needed in China.
+- Folders that already contain a non-empty SRT are skipped — safe to rerun after an interruption; `--overwrite` forces re-transcription.
+- Run `scripts/validate_subtitles.py` afterward to confirm the generated SRT parses and aligns with the video.
 
 ### 6. Write the Chinese voiceover
 
-Read the full subtitle or transcript before drafting. Use subtitles as the narrative backbone and reliable sources only for necessary context. Read `references/content-style.md` and `vendor/blader-humanizer/SKILL.md` completely before writing.
+Read the full subtitle or transcript before drafting. Use subtitles as the narrative backbone and reliable sources only for necessary context. Read `references/content-style.md` and `vendor/blader-humanizer/SKILL.md` completely before writing. For recurring technical terms (military, marine, nuclear, aviation, medical, ecology), keep translations consistent with `assets/term-glossary.csv` — extend the glossary when a new domain appears.
 
 Default requirements:
 
@@ -110,6 +134,12 @@ Remove padding-based binary contrasts, ceremonial sequencing, abstract essence c
 Do not pad to length. If the source cannot support the requested duration, state the evidence gap and propose supplemental sources. If the Humanizer instructions cannot be loaded or the pass cannot be completed, mark the voiceover blocked rather than claiming completion.
 
 ### 7. Create publication information
+
+Learn from peer hits before writing, then keep the library evolving:
+
+1. Run `python scripts/peer_hit_library.py --patterns` to see which hook pattern (数字冲击 / 对比反差 / 信息缺口设问 / 后果威胁 / 身份反转 / 反常识 / 悬念事件 / 情感共鸣) has the best average views in `assets/peer-hit-library.csv`. Run `--list --category <选题分类>` to read similar-topic hit titles.
+2. Write the title by combining the proven pattern with this topic's factual hook — imitate the structure, never copy a peer title.
+3. After publishing (or when spotting a peer hit), feed the data back: `python scripts/peer_hit_library.py --add ...` or `--import 观察到的爆款.csv`. The pattern ranking then shifts automatically, so the next batch is generated from updated evidence — this is the continuous evolution loop.
 
 Write `发布信息.txt` as:
 
@@ -172,6 +202,7 @@ Run:
 
 ```powershell
 python scripts/validate_deliverables.py <output-root>
+python scripts/validate_subtitles.py <output-root> --ffprobe-location "<ffmpeg-bin-dir>"
 ```
 
 Do not report success until deterministic validation and manual checks agree. Report completed, incomplete, and blocked topics separately.
@@ -192,9 +223,14 @@ Do not report success until deterministic validation and manual checks agree. Re
 - Use `vendor/blader-humanizer/SKILL.md` in Embedded mode for every generated or revised voiceover. `vendor/blader-humanizer/LICENSE` records the bundled upstream license.
 - Read `references/downloads.md` before media retrieval or cookie/proxy troubleshooting.
 - Use `assets/topic-manifest-template.csv` as the batch manifest schema.
+- Use `assets/term-glossary.csv` to keep documentary technical terms translated consistently across scripts and subtitles.
+- Use `assets/peer-hit-library.csv` (managed by `scripts/peer_hit_library.py`) as the evolving library of peer hit publication titles, tags, and hook-pattern performance.
 - Use `assets/topic-cover-3x4-approved.png` and `assets/topic-cover-4x3-approved.png` for the approved topic-cover typography, scale, color, outline, shadow, and layout.
 - Use `assets/collection-cover-1x1.png` and `assets/collection-cover-4x3.png` for collection-cover style.
 - Use `assets/jimeng-cover-template.csv` and `scripts/gen_jimeng_cover_prompts.py` for batch-generating 即梦 cover prompts (two plain paragraphs: 3:4 + 4:3).
-- Use `scripts/download_from_manifest.ps1` for downloading.
+- Use `scripts/download_from_manifest.ps1` for downloading (status-machine resume, aria2c acceleration, optional parallel rows).
+- Use `scripts/transcribe.py` for the local ASR fallback when a video has no subtitle (FunASR preferred, faster-whisper built-in; skips folders that already have SRT).
+- Use `scripts/validate_subtitles.py` for SRT syntax and subtitle-video alignment checks.
+- Use `scripts/peer_hit_library.py` to learn from and evolve peer hit publication titles/tags (`--patterns` / `--list` / `--add` / `--import` / `--template`).
 - Use `scripts/validate_publication_info.py` for recursive two-line publication metadata validation.
 - Use `scripts/validate_deliverables.py` for deterministic acceptance checks.

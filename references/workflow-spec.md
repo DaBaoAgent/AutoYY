@@ -15,9 +15,10 @@
 1. **Audit complete:** every readable screenshot is processed, overlap is removed, missing values stay blank.
 2. **Topic approved:** the topic has a clear audience promise and an evidence-backed score.
 3. **Source approved:** URL, metadata, duration, resolution, content match, subtitle status, and rights note are verified.
-4. **Media ready:** a playable HD source and an SRT exist, or the topic is explicitly marked blocked.
+4. **Media ready:** a playable HD source and an SRT exist, or the topic is explicitly marked blocked. When a video has no usable SRT, run the local ASR fallback (`scripts/transcribe.py`) before blocking the topic.
+4.5. **Subtitle quality:** the SRT parses cleanly, timestamps are ordered, and the last subtitle's end time drifts less than the configured threshold from the video duration (`scripts/validate_subtitles.py`).
 5. **Text ready:** the script is grounded, speakable, within target length, has completed the bundled Humanizer Embedded-mode pass, and passes a post-humanization fact check. The verified `爆款口播稿.txt` is the only retained voiceover copy; superseded script drafts are removed after successful promotion.
-6. **Publication ready:** every `发布信息.txt` has exactly two non-empty lines, a factual Douyin-style title of at most 25 characters, and exactly five topic-specific hashtags.
+6. **Publication ready:** every `发布信息.txt` has exactly two non-empty lines, a factual Douyin-style title of at most 25 characters, and exactly five topic-specific hashtags. The peer hit library was consulted for the hook pattern, and new post-publish evidence is fed back into `assets/peer-hit-library.csv`.
 7. **Cover ready:** both ratios, exact Chinese text, and reference style pass visual inspection.
 8. **Package complete:** deterministic validation and manual relevance checks pass.
 
