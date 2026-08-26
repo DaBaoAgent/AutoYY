@@ -43,14 +43,34 @@ Do not announce structural beats. The listener should feel them, not hear their 
 Do not include:
 
 - `【开场钩子】`, `【核心悬念】`, `【推进】`, `【结尾升华】`, or `【补充叙事】`;
-- “镜头切到”“画面来到”“字幕里”等 editing directions;
-- “这段视频最容易省略的一层”“回看整条因果链”“前面三条线索共同指向”等 meta-commentary;
+- "镜头切到""画面来到""字幕里"等 editing directions;
+- "这段视频最容易省略的一层""回看整条因果链""前面三条线索共同指向"等 meta-commentary;
 - generic filler copied between topics;
 - repeated complete paragraphs;
 - unrelated systems or engineering language inserted into an animal, history, or culture topic;
-- “点赞、关注、收藏、转发”等 calls to action unless explicitly requested;
+- "点赞、关注、收藏、转发"等 calls to action unless explicitly requested;
 - fabricated dialogue, motives, facts, numbers, or conclusions;
 - 三连排比式空洞总结段（排比空洞段）：以抽象名词清单开头（如「改革涉及人员培训、医疗服务、监控、问责、保释制度…」），接三个同构排比否定句（「增加A可能帮助X，却不能替代B；惩处C可以追责，却不足以修复D；关闭E也不会自动消除F」），再以升华句收尾（「真正改革必须从…前提出发」「X的本质是Y」）。这种段落全部由抽象名词和句式堆砌而成，没有任何具体的人、事、数字，一听就是 AI 凑字数。出现即改写：保留真实信息点，改成具体的人怎么被影响、具体的事怎么发生、口语化的说法；信息不足就删短，不要硬凑。
+
+## 叙述视角（第三人称规则）
+
+- 叙述层一律第三人称：讲述者不出现「我」「我们」等第一人称（如不说「我们拿到一段录像」「我们可以看到」），改用客观转述（「有一段监控录像」「记录显示」）。
+- 人物引语例外：当事人的原话（字幕里的直接引语）保留第一人称，如「我需要帮助」「我不管同情这回事」。引语是人物说的，不是叙述者说的，必须原样保留。
+- 优先采用字幕原文引语：重写文案时，把 srt 里的真人原话挑出来放进文案（人名说：「…」），这是纪录片文案最有人味的部分，比任何转述都强。原话缺失时才用间接转述（他说，…）。
+- 每篇文案至少包含 5 条以上人物直接引语（从 srt 提取）；引语与事实一样不可编造，只能来自字幕。
+
+## Critical rewrite rule: SRT-first approach
+
+**When srt/subtitle files are available, they must be the primary source for voiceover writing—not supplementary context.** Do not use srt as a fact-checking tool after drafting from memory or summary. This prevents AI hallucination and ensures factual grounding.
+
+Process:
+1. Read the full srt text (extracted without timestamps) before drafting.
+2. Use srt as the narrative backbone—every major plot point, quote, and detail should come from srt.
+3. If srt is insufficient (gaps, missing context), supplement ONLY with verified facts from the user or trusted sources, never with AI-generated filler.
+4. Prioritize direct quotations from srt—real people's words are more compelling than AI paraphrases.
+5. When humanizing, preserve all srt-derived facts, names, dates, and quotes exactly as they appear.
+
+Example: In the Rikers Island documentary, the original draft contained abstract analysis ("制度一旦贴上有罪标签…") that was completely absent from srt. The rewrite used only srt facts: Ballard lying in his own waste, Ford getting a $20 gift card, Stroud saying "I'm not in the compassion business." These concrete details from srt made the story human.
 
 Do not use a fixed transition library to expand every script. When the source is thin, find another reliable source or shorten the piece.
 
