@@ -49,7 +49,8 @@ Do not include:
 - repeated complete paragraphs;
 - unrelated systems or engineering language inserted into an animal, history, or culture topic;
 - “点赞、关注、收藏、转发”等 calls to action unless explicitly requested;
-- fabricated dialogue, motives, facts, numbers, or conclusions.
+- fabricated dialogue, motives, facts, numbers, or conclusions;
+- 三连排比式空洞总结段（排比空洞段）：以抽象名词清单开头（如「改革涉及人员培训、医疗服务、监控、问责、保释制度…」），接三个同构排比否定句（「增加A可能帮助X，却不能替代B；惩处C可以追责，却不足以修复D；关闭E也不会自动消除F」），再以升华句收尾（「真正改革必须从…前提出发」「X的本质是Y」）。这种段落全部由抽象名词和句式堆砌而成，没有任何具体的人、事、数字，一听就是 AI 凑字数。出现即改写：保留真实信息点，改成具体的人怎么被影响、具体的事怎么发生、口语化的说法；信息不足就删短，不要硬凑。
 
 Do not use a fixed transition library to expand every script. When the source is thin, find another reliable source or shorten the piece.
 
