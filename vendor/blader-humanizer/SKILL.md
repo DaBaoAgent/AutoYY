@@ -1,5 +1,5 @@
 ---
-name: humanizer
+name: blader-humanizer
 description: |
   Remove signs of AI-generated writing from text. Use when editing or reviewing
   text to make it sound more natural and human-written. Based on Wikipedia's
@@ -7,6 +7,9 @@ description: |
   inflated symbolism, promotional language, superficial -ing analyses, vague
   attributions, em dash overuse, rule of three, AI vocabulary words, passive
   voice, negative parallelisms, and filler phrases.
+# 注意：本技能原名 humanizer，与 Hermes 官方内置技能 creative/humanizer 撞名，
+# 2026-09-18 改为 blader-humanizer（与目录名一致，也是各技能文档里引用的名字）。
+# 中文口播去AI味场景优先用本技能；官方 humanizer 已在 config.yaml skills.disabled 中禁用。
 license: MIT
 metadata:
   version: "2.9.1"
