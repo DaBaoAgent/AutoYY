@@ -1,4 +1,4 @@
 interface:
   display_name: "AutoYY"
-  short_description: "从数据选题到下载、去AI味口播稿、封面和发布信息的一体化流程"
-  default_prompt: "Use $autoyy to run the documentary workflow in D:\\自动剪辑, including mandatory embedded Humanizer processing for every voiceover, then covers, publication metadata, and final validation."
+  short_description: "从数据选题到下载、SRT事实锚定口播、封面发布与强制批量验收的一体化流程"
+  default_prompt: "Use $autoyy to run the requested documentary workflow. For multi-topic voiceovers, process one topic per writer context, read the full SRT, write only a candidate, complete Humanizer + fact-check + independent reviewer + evidence/hash gates, promote through the AutoYY CLI, and report the batch complete only when every topic passes deterministic validation."

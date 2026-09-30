@@ -3,96 +3,42 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 
-
-LEGACY_FIELDS = (
-    "爆款标题：",
-    "匹配标签：",
-    "发布建议：",
-    "版权提醒：",
-    "封面正标题",
-    "封面副标题",
-)
-EMOJI_RE = re.compile(
-    "[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]"
-)
-HASHTAG_RE = re.compile(r"#[^\s#]+")
-
-
-def validate_file(path: Path, root: Path) -> dict:
-    issues: list[str] = []
-    text = path.read_text(encoding="utf-8-sig", errors="replace")
-    lines = text.splitlines()
-
-    if len(lines) != 2:
-        issues.append(f"physical line count is {len(lines)}, expected 2")
-    if any(not line.strip() for line in lines):
-        issues.append("blank line found")
-
-    title = lines[0].strip() if lines else ""
-    tag_line = lines[1].strip() if len(lines) >= 2 else ""
-
-    if not title:
-        issues.append("title missing")
-    if len(title) > 25:
-        issues.append(f"title length is {len(title)}, expected at most 25")
-    if re.match(r"^(?:爆款)?标题[:：]", title):
-        issues.append("title contains a field label")
-    if EMOJI_RE.search(text):
-        issues.append("emoji found")
-
-    tag_tokens = tag_line.split()
-    valid_tags = [token for token in tag_tokens if HASHTAG_RE.fullmatch(token)]
-    if len(tag_tokens) != 5 or len(valid_tags) != 5:
-        issues.append(
-            f"valid hashtag count is {len(valid_tags)}, expected exactly 5"
-        )
-
-    found_legacy = [field for field in LEGACY_FIELDS if field in text]
-    if found_legacy:
-        issues.append("legacy fields: " + ", ".join(found_legacy))
-
-    return {
-        "file": str(path.relative_to(root)),
-        "valid": not issues,
-        "title": title,
-        "title_length": len(title),
-        "hashtag_count": len(valid_tags),
-        "issues": issues,
-    }
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from autoyy.publication import validate_publication_file
+from autoyy.result import EXIT_FAILED, EXIT_OK, EXIT_USAGE
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Recursively validate AutoYY publication information files."
-    )
+    parser = argparse.ArgumentParser(description="Recursively validate AutoYY publication information files.")
     parser.add_argument("root", type=Path)
     parser.add_argument("--json-out", type=Path)
+    parser.add_argument("--allow-empty", action="store_true")
+    parser.add_argument("--expected-count", type=int)
     args = parser.parse_args()
-
     root = args.root.resolve()
     if not root.is_dir():
         print(f"Root does not exist: {root}", file=sys.stderr)
-        return 2
-
+        return EXIT_USAGE
     files = sorted(root.rglob("发布信息.txt"))
-    results = [validate_file(path, root) for path in files]
-    summary = {
-        "root": str(root),
-        "file_count": len(results),
-        "valid_count": sum(item["valid"] for item in results),
-        "invalid_count": sum(not item["valid"] for item in results),
-        "results": results,
-    }
-
+    issues: list[str] = []
+    if not files and not args.allow_empty:
+        issues.append("no 发布信息.txt files found")
+    if args.expected_count is not None and len(files) != args.expected_count:
+        issues.append(f"file count {len(files)}, expected {args.expected_count}")
+    results = []
+    for path in files:
+        result = validate_publication_file(path)
+        results.append({"file": str(path.relative_to(root)), **result})
+    invalid = sum(not item.get("valid", False) for item in results)
+    summary = {"root": str(root), "file_count": len(results), "valid_count": len(results) - invalid, "invalid_count": invalid, "issues": issues, "results": results}
     rendered = json.dumps(summary, ensure_ascii=False, indent=2)
     if args.json_out:
         args.json_out.write_text(rendered, encoding="utf-8")
     print(rendered)
-    return 0 if results and summary["invalid_count"] == 0 else 1
+    return EXIT_OK if not issues and invalid == 0 else EXIT_FAILED
 
 
 if __name__ == "__main__":

@@ -1,47 +1,39 @@
-# -*- coding: utf-8 -*-
-"""Convert SRT files to plain text transcripts (strip indexes/timestamps)."""
-import os, re, sys
+#!/usr/bin/env python3
+from __future__ import annotations
 
-ROOT = r"F:\16 监狱2"
+import argparse
+import sys
+from pathlib import Path
 
-def srt_to_text(path):
-    with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-        raw = f.read()
-    # Remove BOM, split blocks
-    blocks = re.split(r"\n\s*\n", raw)
-    lines = []
-    for b in blocks:
-        b = b.strip()
-        if not b:
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from autoyy.media import find_primary_subtitle
+from autoyy.paths import discover_topics
+from autoyy.subtitles import srt_to_text
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Compatibility helper: convert topic SRT files to plain transcripts")
+    parser.add_argument("root", type=Path)
+    parser.add_argument("--output-name", default="_transcript.txt")
+    parser.add_argument("--force", action="store_true")
+    args = parser.parse_args()
+    root = args.root.resolve()
+    if not root.is_dir():
+        return 2
+    failures = 0
+    for topic in discover_topics(root):
+        subtitle = find_primary_subtitle(topic)
+        if subtitle is None:
+            print(f"SKIP {topic.name}: no SRT")
             continue
-        parts = b.split("\n")
-        # parts[0] = index, parts[1] = timestamp, rest = text
-        text_parts = []
-        for p in parts:
-            if re.match(r"^\d+$", p.strip()):
-                continue
-            if "-->" in p:
-                continue
-            text_parts.append(p.strip())
-        if text_parts:
-            lines.append(" ".join(text_parts))
-    return "\n".join(lines)
+        output = topic / args.output_name
+        if output.exists() and not args.force:
+            print(f"SKIP {topic.name}: {output.name} exists")
+            continue
+        output.write_text(srt_to_text(subtitle), encoding="utf-8")
+        print(f"OK {topic.name}: {output.name}")
+    return 1 if failures else 0
 
-for d in sorted(os.listdir(ROOT)):
-    full = os.path.join(ROOT, d)
-    if not os.path.isdir(full):
-        continue
-    srt = None
-    for f in os.listdir(full):
-        if f.lower().endswith(".srt"):
-            srt = os.path.join(full, f)
-            break
-    if not srt:
-        print(f"[SKIP] no srt in {d}")
-        continue
-    text = srt_to_text(srt)
-    out = os.path.join(full, "_transcript.txt")
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(text)
-    print(f"[OK] {d}: {len(text)} chars -> {out}")
-print("DONE")
+
+if __name__ == "__main__":
+    raise SystemExit(main())

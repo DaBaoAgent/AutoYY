@@ -18,7 +18,7 @@
 4. **Media ready:** a playable HD source and an SRT exist, or the topic is explicitly marked blocked. When a video has no usable SRT, run the local ASR fallback (`scripts/transcribe.py`) before blocking the topic.
 4.5. **Subtitle quality:** the SRT parses cleanly, timestamps are ordered, and the last subtitle's end time drifts less than the configured threshold from the video duration (`scripts/validate_subtitles.py`).
 5. **Text ready:** the script is grounded, speakable, within target length, has completed the bundled Humanizer Embedded-mode pass, and passes a post-humanization fact check. The verified `爆款口播稿.txt` is the only retained voiceover copy; superseded script drafts are removed after successful promotion.
-6. **Publication ready:** every `发布信息.txt` has exactly two non-empty lines, a factual Douyin-style title of at most 25 characters, and exactly five topic-specific hashtags. The peer hit library was consulted for the hook pattern, and new post-publish evidence is fed back into `assets/peer-hit-library.csv`.
+6. **Publication ready:** publication metadata passes the canonical two-line validator; peer evidence is read from the project-local `.autoyy/peer-hit-library.csv` with platform/category/sample-confidence context.
 7. **Cover ready:** both ratios, exact Chinese text, and reference style pass visual inspection.
 8. **Package complete:** deterministic validation and manual relevance checks pass.
 
@@ -84,3 +84,19 @@ Confirm:
 ## Batch handoff
 
 Report complete and incomplete counts, missing items, blocked reasons, subtitle fallback languages, script character range, cover ratio results, manifest path, and output root.
+
+## Deterministic batch voiceover gate
+
+For batches of two or more topics, the writer stage is serialized per topic by default. Each topic gets an isolated source context and must complete its own source read, candidate, Humanizer pass, fact check, reviewer, and machine gate.
+
+The writer creates `爆款口播稿.candidate.txt`. The final `爆款口播稿.txt` is created only by `python -m autoyy voiceover promote <topic-folder>` after `<topic>/.autoyy/voiceover-quality.json` matches the current SRT/script hashes and every required gate passes.
+
+The structured record must bind current source/script SHA-256 values and include `srt_full_read=true`, `attempt=1..3`, `humanizer.mode=embedded`, an independent reviewer, fact/reviewer coverage counts, and distributed evidence anchors. External supplemental facts require `source_kind=verified_source`, `source_ref`, and `verified_at`.
+
+After all topics, run `python -m autoyy voiceover validate <project-root>`. Every topic must report complete. A partial batch returns exit code 1 and may only be described as incomplete/blocked.
+
+## Project state
+
+Production projects use `.autoyy/state.json` with schema version 1. Stages are `source`, `subtitle`, `voiceover`, `publication`, `cover`, and `package`, with statuses `pending`, `running`, `ready`, `blocked`, `failed`, or `stale`. Ready stages may be explicitly approved; a fingerprint change revokes affected approvals.
+
+A changed upstream fingerprint marks dependent ready stages stale. State writes are atomic. A corrupted state file is an explicit error; it is never silently replaced. State contains no secrets. `autoyy state approve` records explicit approval; `autoyy state force` resets a stage to pending, revokes approval, and stales dependents without deleting outputs.

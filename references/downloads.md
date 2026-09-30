@@ -18,9 +18,9 @@ Never bypass DRM, paywalls, private-video access, regional controls, bot protect
 
 ## Dependencies
 
-The download script expects PowerShell 5.1+, `yt-dlp` on `PATH` or supplied with `-YtDlp`, and `ffmpeg` on `PATH` or supplied with `-FfmpegLocation`.
+The compatibility wrapper supports Windows PowerShell 5.1+ and delegates business logic to Python 3.11+. `yt-dlp`, `ffmpeg`, and `ffprobe` are required for verified media completion; Node or Deno may be required by current YouTube extraction.
 
-Use an up-to-date `yt-dlp`. Record the version in troubleshooting notes.
+Use an up-to-date `yt-dlp`. Record the version in troubleshooting notes. Parallel rows use AutoYY's Python worker pool, so behavior is consistent across Windows PowerShell 5.1 and PowerShell 7.
 
 ## Manifest use
 
@@ -61,7 +61,7 @@ Normalize the selected output to `字幕.srt`. Record the selected language. Do 
 ## Failure handling
 
 - Resume partial media; do not delete it automatically.
-- Skip an existing playable source and SRT.
+- Skip only an existing source/SRT pair that passes non-empty, SRT, and ffprobe verification; file names alone never establish readiness.
 - Distinguish authentication, geo restriction, missing formats, missing subtitles, disk space, and network failures.
 - Retry transient failures with bounded retries.
 - If metadata succeeds but media fails, retain the verified manifest row and mark the topic blocked.

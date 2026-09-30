@@ -1,2 +1,17 @@
 __pycache__/
 *.py[cod]
+desktop.ini
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+.env
+.autoyy/
+*.tmp
+*.bak
+coverage.xml
+references/env-facts.local.md
+*.egg-info/

@@ -7,7 +7,7 @@ description: 老肉杂谈风格爆款口播稿管线。触发:老肉/laorou/闲�
 
 把纪录片/万物科普素材（SRT/视频/主题）写成**老肉杂谈式闲聊科普口播稿**：像跟观众唠嗑一样把一件事从"由头"讲到"门道"，全程口语、短句、带钩子、带考据、带纠正，最后以艾伦签名收尾。
 
-风格蒸馏自 `D:\BaiduSyncdisk\3 艾伦和艾薇\老肉杂谈\` 内老肉杂谈原片转写稿（大白菜/丹顶鹤/猪笼草/乌鱼子/麋鹿，2026-09-02），全文读法见 `references/laorou-style-guide.md`。
+风格蒸馏自 `<maintainer-provided-style-sample-corpus>` 内老肉杂谈原片转写稿（大白菜/丹顶鹤/猪笼草/乌鱼子/麋鹿，2026-09-02），全文读法见 `references/laorou-style-guide.md`。
 
 ## 触发条件
 
@@ -69,7 +69,7 @@ description: 老肉杂谈风格爆款口播稿管线。触发:老肉/laorou/闲�
 2. **列钩子**：从素材里挑最反常识/最离谱/最有反转感的 1-3 个点做"待会细说"钩子。
 3. **起草**：按六要素+结构模板写，通篇艾伦第一人称唠嗑口吻。
 4. **校验**：跑字数（4500-5500 非空白）、结尾签名句逐字在、纯中文、无 em dash、关键事实/数字仍在稿中。
-5. **落盘**：写入目标目录（不覆盖已有原稿时用 `爆款口播稿-老肉版.txt` 等不冲突文件名），回报路径与字数。
+5. **落盘与门禁**：先写 `爆款口播稿.candidate.txt`，运行 `python -m autoyy voiceover scaffold <topic-folder> --voice-profile laorou` 建立质量记录；完成 Embedded Humanizer、事实复核、独立 reviewer 与 evidence 后，只通过 `autoyy voiceover promote` 生成 `爆款口播稿.txt`。禁止直接写最终文件。
 
 ## Pitfalls
 

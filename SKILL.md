@@ -11,7 +11,7 @@ Use `D:\自动剪辑` as the default working root. If the user does not provide 
 
 > **⚠️ 目录分工（2026-08-14 体检补充）**：
 > - **工作产出根 = `D:\自动剪辑`**：所有选题项目目录（`AutoYY-YYYYMMDD-选题名/`）、下载的视频/字幕/文案/封面都在这。
-> - **技能代码本体 = `D:\@kaifa\AutoYY`**（git 仓库 `DaBaoAgent/AutoYY`，SSH 443 同步）：本技能目录是指向它的 junction，SKILL.md/scripts/assets/vendor 的修改直接进 git。**不要**把工作产出放这里。
+> - **技能代码本体 = `current AutoYY Git checkout`**（git 仓库 `DaBaoAgent/AutoYY`，SSH 443 同步）：本技能目录是指向它的 junction，SKILL.md/scripts/assets/vendor 的修改直接进 git。**不要**把工作产出放这里。
 
 ## Start
 
@@ -28,7 +28,7 @@ Use `D:\自动剪辑` as the default working root. If the user does not provide 
 - Use Chrome control only when the user explicitly needs signed-in browser state. Use `--cookies-from-browser` only after explicit authorization.
 - Before writing or revising any voiceover, read `vendor/blader-humanizer/SKILL.md` completely and apply its Embedded mode. This humanization pass is mandatory, including single-topic drafts, batch generation, and rewrites.
 - Use the image-generation skill for all raster cover generation and edits. Load the relevant master cover from `assets/` as a style reference.
-- Use `scripts/download_from_manifest.ps1` for repeatable Windows batch downloads. It supports status-machine resume (skips `ready`-marked or previously complete rows), optional aria2c multi-connection acceleration, and optional PowerShell 7 parallel rows (`-Parallel N`).
+- Use `scripts/download_from_manifest.ps1` as the backward-compatible Windows entry. It delegates to the tested Python download core, validates resume artifacts before skipping them, supports optional aria2c acceleration, and supports `-Parallel N` without PowerShell runspace-specific logic.
 - If a topic folder has a video but no usable SRT, run `scripts/transcribe.py` as the local ASR fallback: it extracts audio with ffmpeg and writes `字幕.srt` (FunASR preferred for Chinese, faster-whisper already installed; resumes automatically by skipping folders that already have subtitles).
 - Use `scripts/validate_subtitles.py` to check SRT syntax, time-axis order, and subtitle-video alignment drift before writing the voiceover.
 - Use `scripts/peer_hit_library.py` to learn from peer hit documentary titles and tags: run `--patterns` before writing `发布信息.txt` to see which hook pattern performs best, and `--import`/`--add` to feed observed hits and own post-publish results back into the library so the ranking keeps evolving.
@@ -87,9 +87,9 @@ powershell -ExecutionPolicy Bypass -File scripts/download_from_manifest.ps1 `
 Optional P1 hardening flags (all backward compatible):
 
 - `-UseAria2 -Aria2Connections 8` — aria2c multi-connection per file (auto-detected; install with `winget install aria2.aria2`). Falls back to yt-dlp built-in concurrent fragments when aria2c is missing.
-- `-Parallel 4` — process up to N topics concurrently (requires PowerShell 7+; falls back to sequential with a warning on 5.1).
+- `-Parallel 4` processes up to N topics through AutoYY's Python worker pool. The PowerShell wrapper works on both Windows PowerShell 5.1 and PowerShell 7.
 - `-Trace` — print every yt-dlp command for debugging.
-- Manifest rows with `status=ready` are skipped; rows already complete in `下载状态.csv` are skipped when files still exist. Interrupted batches resume from verified files — rerun the same command to continue.
+- Resume trusts validation, not status labels: any existing non-empty video/SRT pair is skipped only after SRT and ffprobe checks pass. `下载状态.csv` is a report, not a source of truth.
 
 Prefer manual English subtitles, then automatic English, then another available language. Keep the original URL and metadata in the manifest. Do not defeat DRM, paywalls, regional access controls, or platform security.
 
@@ -99,11 +99,11 @@ If a topic folder has a playable video but no usable SRT (YouTube has no caption
 
 ```powershell
 python scripts/transcribe.py <output-root> [--manifest <manifest.csv>] `
-  --ffmpeg-location "C:\Users\<user>\ffmpeg\ffmpeg-8.1.1-essentials_build\bin"
+  --ffmpeg-location "<ffmpeg-bin-dir>"
 ```
 
-- Backend `auto` prefers FunASR (`paraformer-zh`, best Chinese accuracy; install once with `pip install funasr`), otherwise uses the already-installed faster-whisper (`--model-size` default `medium`; use `large-v3` for quality on overnight runs). CPU int8 works on this machine; no GPU required.
-- Models download automatically via the `hf-mirror.com` endpoint (set in the script), so no manual HuggingFace setup is needed in China.
+- Backend `auto` prefers FunASR when installed, otherwise faster-whisper. Install the corresponding optional extra when needed. `--model-size` defaults to `medium`; choose a larger model only when the runtime budget allows it.
+- AutoYY respects the existing Hugging Face environment. Use `--hf-endpoint` explicitly when a mirror is required; the script does not mutate the global endpoint at import time.
 - Folders that already contain a non-empty SRT are skipped — safe to rerun after an interruption; `--overwrite` forces re-transcription.
 - Run `scripts/validate_subtitles.py` afterward to confirm the generated SRT parses and aligns with the video.
 
@@ -120,6 +120,10 @@ Default requirements:
 - short, speakable sentences with technical terms explained simply;
 - no invented facts, unrelated filler, duplicated paragraphs, template transitions, or calls to follow/share.
 
+Voice profile is explicit, never inferred across a batch:
+- `default`: follow `references/content-style.md`, including third-person narrator rules.
+- `laorou`: first read `laorou/SKILL.md` and its style guide, then run `python -m autoyy voiceover scaffold <topic-folder> --voice-profile laorou`. This profile overrides narrator perspective only; source grounding, Humanizer, evidence, reviewer, length, anti-copy, and promotion gates remain mandatory.
+
 After drafting:
 
 1. Keep the first draft under a versioned filename; do not promote it to `爆款口播稿.txt` yet.
@@ -133,13 +137,33 @@ Remove padding-based binary contrasts, ceremonial sequencing, abstract essence c
 
 Do not pad to length. If the source cannot support the requested duration, state the evidence gap and propose supplemental sources. If the Humanizer instructions cannot be loaded or the pass cannot be completed, mark the voiceover blocked rather than claiming completion.
 
+
+#### Mandatory batch voiceover gate
+
+When a request contains two or more topic directories, quality outranks throughput:
+
+1. Build an explicit topic queue. The voiceover writer processes **one topic per worker/context** by default. Never concatenate several SRTs into one writing prompt and never produce multiple final voiceovers in one model call.
+2. Read the current topic's complete `字幕.srt`; summaries may navigate the source but cannot replace the full read.
+3. Write `爆款口播稿.candidate.txt`. Do not write or overwrite `爆款口播稿.txt` directly.
+4. Run `vendor/blader-humanizer/SKILL.md` in Embedded mode on that candidate, then perform a source-grounded fact check and an independent semantic review in a fresh context.
+5. Create/update `<topic>/.autoyy/voiceover-quality.json`. It must bind current source/script SHA-256, use `attempt=1..3`, `humanizer.mode=embedded`, `reviewer.independent=true`, fact/reviewer coverage counts, and evidence with matching script excerpts. Supplemental non-SRT facts require `source_kind=verified_source`, `source_ref`, and `verified_at`.
+6. Evidence must be distributed through the script; a long ungrounded span is a hard failure. Numbers, dates, direct quotations, names, and causal claims may not be invented to reach the length target.
+7. Promote only through `python -m autoyy voiceover promote <topic-folder>`. The command refuses stale/missing gates and checks the candidate against sibling final scripts for cross-topic copying before creating the final file.
+8. After all topics, run `python -m autoyy voiceover validate <project-root>`. Any failed topic makes the batch `INCOMPLETE` and exit code 1. Never report overall completion because files merely exist.
+
+Hard default limits: 4,500-5,500 non-whitespace characters, at least five source-backed direct quotations when the source contains enough real dialogue, no unsupported numeric claims, no banned AI/template shells, and no duplicated long paragraphs. Cross-topic hard failures include a shared contiguous block of 80+ characters, 30+ character matching blocks totaling over 8% of the shorter script, highly similar openings/endings, or highly similar long paragraphs. Fixed required profile signatures are excluded from the copy comparison.
+
+Automatic writer -> Humanizer -> machine gate -> reviewer repair loops may run at most three times. A third failure becomes `blocked_quality`; do not weaken thresholds, fabricate filler, or mark the topic complete.
+
 ### 7. Create publication information
 
 Learn from peer hits before writing, then keep the library evolving:
 
-1. Run `python scripts/peer_hit_library.py --patterns` to see which hook pattern (数字冲击 / 对比反差 / 信息缺口设问 / 后果威胁 / 身份反转 / 反常识 / 悬念事件 / 情感共鸣) has the best average views in `assets/peer-hit-library.csv`. Run `--list --category <选题分类>` to read similar-topic hit titles.
-2. Write the title by combining the proven pattern with this topic's factual hook — imitate the structure, never copy a peer title.
-3. After publishing (or when spotting a peer hit), feed the data back: `python scripts/peer_hit_library.py --add ...` or `--import 观察到的爆款.csv`. The pattern ranking then shifts automatically, so the next batch is generated from updated evidence — this is the continuous evolution loop.
+1. Run `python scripts/peer_hit_library.py --patterns --platform douyin` and inspect count, median, P75, peak, and confidence. Do not compare unlike platforms as one population by default.
+2. Use `--list --platform <platform> --category <category>` to inspect similar-topic evidence. Treat low-sample patterns as weak evidence, not a winner.
+3. The mutable library defaults to the current project's `.autoyy/peer-hit-library.csv`; `assets/peer-hit-library.csv` is a read-only seed/template.
+4. Write the title from the topic's checked factual hook and the evidence patterns. Imitate structure only; never copy a peer title.
+5. After publishing or observing a peer hit, feed dated evidence back with `--add` or `--import`. Use `--dry-run` before bulk imports when appropriate.
 
 Write `发布信息.txt` as:
 
@@ -182,7 +206,7 @@ Batch generation: fill the CSV template (see Resources) with one row per topic (
 python scripts/gen_jimeng_cover_prompts.py <output-root> --csv <filled-csv>
 ```
 
-The script validates 6-char/8-char title lengths, skips rows whose target directory is missing, and writes `封面提示词-即梦.txt` (UTF-8, two prompt paragraphs only). It also skips any topic directory that already contains covers: the check counts image files (png/jpg/jpeg/webp/bmp/gif) in the directory and treats >= 2 images as "covers already exist", regardless of their filenames (封面-3比4 / 封面-4比3 / 封面 / cover / arbitrary names all count). Derive the 6+8 cover text from the approved 发布信息 title and the script's factual content — do not reuse the full 25-char title verbatim.
+The script treats 6+8 title lengths as hard validation. Invalid rows fail without writing. Existing standard cover files or a non-empty prompt are preserved unless `--force` is explicit; arbitrary unrelated images do not count as completed covers.
 
 ### 9. Validate and hand off
 
@@ -224,11 +248,12 @@ Do not report success until deterministic validation and manual checks agree. Re
 - Read `references/downloads.md` before media retrieval or cookie/proxy troubleshooting.
 - Use `assets/topic-manifest-template.csv` as the batch manifest schema.
 - Use `assets/term-glossary.csv` to keep documentary technical terms translated consistently across scripts and subtitles.
-- Use `assets/peer-hit-library.csv` (managed by `scripts/peer_hit_library.py`) as the evolving library of peer hit publication titles, tags, and hook-pattern performance.
+- Use `assets/peer-hit-library.csv` only as a tracked seed/template.
+- Store evolving peer/post-publish evidence in `<project>/.autoyy/peer-hit-library.csv` or an explicit `--library` path so normal use never dirties the repository.
 - Use `assets/topic-cover-3x4-approved.png` and `assets/topic-cover-4x3-approved.png` for the approved topic-cover typography, scale, color, outline, shadow, and layout.
 - Use `assets/collection-cover-1x1.png` and `assets/collection-cover-4x3.png` for collection-cover style.
 - Use `assets/jimeng-cover-template.csv` and `scripts/gen_jimeng_cover_prompts.py` for batch-generating 即梦 cover prompts (two plain paragraphs: 3:4 + 4:3).
-- Use `scripts/download_from_manifest.ps1` for downloading (status-machine resume, aria2c acceleration, optional parallel rows).
+- Use `scripts/download_from_manifest.ps1` for downloading (validated resume, aria2c acceleration, optional parallel rows).
 - Use `scripts/transcribe.py` for the local ASR fallback when a video has no subtitle (FunASR preferred, faster-whisper built-in; skips folders that already have SRT).
 - Use `scripts/validate_subtitles.py` for SRT syntax and subtitle-video alignment checks.
 - Use `scripts/peer_hit_library.py` to learn from and evolve peer hit publication titles/tags (`--patterns` / `--list` / `--add` / `--import` / `--template`).

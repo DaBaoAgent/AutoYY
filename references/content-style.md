@@ -149,3 +149,6 @@ Use `assets/collection-cover-1x1.png` and `assets/collection-cover-4x3.png` as s
 4. Confirm the scene is realistic and topic-relevant.
 5. Compare both variants for consistent identity.
 6. Save drafts with versioned names; promote only approved files to final names.
+## Voice-profile override
+
+The third-person narrator rules in this document define the `default` profile. The optional `laorou` profile intentionally uses the first-person Allen voice defined in `laorou/SKILL.md`; select it explicitly with `autoyy voiceover scaffold ... --voice-profile laorou`. Profile selection never relaxes factual grounding, Humanizer, evidence, reviewer, length, anti-copy, or final-promotion gates.

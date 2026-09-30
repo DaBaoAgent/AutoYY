@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m compileall -q scripts src
+      - run: python -m ruff check .
+      - run: python -m pytest --cov=autoyy --cov-report=term-missing --cov-fail-under=85 -q
+      - name: PowerShell 5.1 syntax check
+        shell: powershell
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("scripts/download_from_manifest.ps1", [ref]$null, [ref]$errors)
+          if ($errors.Count) { $errors | Format-List; exit 1 }
+      - name: PowerShell 7 compatibility integration
+        shell: pwsh
+        run: python -m pytest -q tests/integration/test_download_ps1.py
+      - run: git diff --check
