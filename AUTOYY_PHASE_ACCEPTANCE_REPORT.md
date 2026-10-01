@@ -11,11 +11,11 @@
 
 最终 release gate 结果：
 
-- `80 tests collected`，完整测试集通过。
-- 总覆盖率 `87.63%`，CI hard gate 已提升到 `85%`。
-- `download` 86%、`deliverables` 87%、`voiceover` 88%。
-- `manifest` 92%、`paths` 89%、`peer` 91%、`publication` 95%、`state` 91%、`subtitles` 94%、`doctor` 100%。
-- Python compile、Ruff、PowerShell 5.1 语法、PowerShell 5.1 wrapper integration、实际 PowerShell 7 wrapper integration 均通过。
+- `86 tests collected`，完整测试集通过。
+- GitHub Actions P0 hardening run `36798612582`：Python 3.11、Python 3.12、wheel-smoke 三个 job 全部通过。
+- 远端 Python 3.11 / 3.12 coverage 均高于 `85%` hard gate；3.12 实测 `86.13%`。
+- Python compile、Ruff、PowerShell 5.1 语法、PowerShell 7 wrapper integration、`git diff --check` 与 fresh-wheel install smoke 均通过。
+- `strategy.fail-fast=false`，任一 Python matrix 失败不会取消另一版本的验收证据。
 ## Phase 0 — 基线与失败语义
 
 已完成：
@@ -113,6 +113,8 @@
 - batch/package validator 只认最终标准文件，candidate 永远不能代表交付完成。
 - `.autoyy/voiceover-quality.json` 绑定 source/script SHA-256，要求 `srt_full_read=true`。
 - Humanizer 必须 `mode=embedded`；fact check 与 reviewer 必须绑定当前 source/script hash；reviewer 必须 `independent=true`。
+- 最终 Gate 不再信任 Agent 自填的 `pass=true` / `independent=true`：质量记录必须由独立 verifier 使用 `AUTOYY_QUALITY_ATTESTATION_KEY` 生成 HMAC-SHA256 attestation，任何签名后的字段篡改都会使 Gate 失败。
+- writer、reviewer、verifier 三方 `run_id` 必须隔离；writer/reviewer 同 run，或 verifier 复用 writer/reviewer run 都会被拒绝。
 - evidence 必须包含可定位的 source text 与 script excerpt；允许带 `source_ref + verified_at` 的外部核验来源支持字幕之外的可靠事实。
 - 默认强制 4,500–5,500 非空白字符、最少五个可回源直接引语、数字来源检查、evidence 分布覆盖、AI/template shell、重复长段落检测。
 - 跨 topic 检测 shared contiguous block、matching-block ratio、开头/结尾相似度和长段落相似度。
@@ -125,22 +127,23 @@
 
 ```text
 python -m autoyy --version       -> autoyy 0.1.0
-python -m autoyy doctor         -> exit 0 / ok=true
 python -m compileall -q ...     -> PASS
 python -m ruff check .          -> PASS
-pytest collection               -> 80 tests
-pytest + coverage               -> 87.63% total / 85% hard gate PASS
+pytest collection               -> 86 tests
+pytest + coverage (GitHub 3.12) -> 86.13% total / 85% hard gate PASS
+pytest + coverage (GitHub 3.11) -> >85% hard gate PASS
 PowerShell 5.1 syntax           -> PASS
-PowerShell 5.1 wrapper test     -> PASS
 PowerShell 7 wrapper test       -> PASS
+fresh wheel build/install       -> PASS
+autoyy transcribe --help        -> PASS
+git diff --check                -> PASS
+GitHub Actions run 36798612582  -> 3/3 jobs SUCCESS
 ```
-## 当前机器能力说明
+## 环境边界说明
 
-`doctor` 当前检测到：Python、yt-dlp、ffmpeg、ffprobe、Node、Deno、aria2c 可用；faster-whisper 可用，FunASR 未安装。
+GitHub CI 以 `windows-latest` + Python 3.11 / 3.12 为发布基线；本地开发机能力不再作为 release PASS 的依据。外部命令是否可用仍由 `autoyy doctor` 在实际运行环境中报告。
 
-`pwsh` 未加入当前系统 PATH，因此 doctor 将它显示为 optional unavailable；这不影响 Windows PowerShell 5.1 主兼容路径。本轮同时直接使用机器上现有的 PowerShell 7 runtime 跑过 wrapper integration，结果通过。
-
-`AUTOYY_WORK_ROOT` 未设置时的源码默认值仍为 `D:\自动剪辑`；终端里偶尔出现的乱码是控制台编码显示问题，源码本身已核对为正确中文路径。
+`AUTOYY_WORK_ROOT` 未设置时的源码默认值仍为 `D:\自动剪辑`。CLI 与兼容脚本已统一使用 UTF-8 输出策略，避免旧 Windows locale 因中文输出触发编码异常。
 
 ## 保留的人工边界
 
@@ -150,7 +153,7 @@ PowerShell 7 wrapper test       -> PASS
 - AutoYY 仍是 Windows-first 项目；没有宣称 Linux/macOS 全流程等价支持。
 ## 交接建议
 
-当前工作树包含本轮计划内的新增与修改，尚未替用户执行 Git commit / push。建议后续由 Codex/Hermes 按本报告和 `AUTOYY_ITERATION_REVIEW_PLAN.md` 做一次独立 review，再按逻辑拆分 commit。
+P0 hardening 已在 `fix/p0-hardening` 分支提交并推送；远端 CI 已实际通过。合入默认分支后仍必须以 `main` 的 GitHub Actions 最终结果作为发布依据，不允许仅凭本地结果或本报告宣称 release-ready。
 
 推荐交接验收命令：
 
@@ -164,4 +167,4 @@ git diff --check
 git status --short
 ```
 
-结论：当前代码可作为 `0.1.0` release candidate 继续进行独立代码审查、真实授权媒体 smoke test 和首次公开发布准备。
+结论：P0 hardening 在功能分支已通过机器验收；只有默认分支 `main` 对同一代码再次 GitHub CI 全绿后，才将 P0 标记为最终 CLOSED，并进入下一轮性能与体验优化。
