@@ -15,3 +15,6 @@ venv/
 coverage.xml
 references/env-facts.local.md
 *.egg-info/
+
+build/
+dist/

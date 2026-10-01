@@ -17,7 +17,7 @@ Use `D:\自动剪辑` as the default working root. If the user does not provide 
 
 1. Determine which stages the user requested: performance audit, topic planning, source research, authorized downloads, text production, cover generation, full pipeline, resume, or audit.
 2. Record configurable inputs instead of hardcoding prior values: input data, topic count, project directory under the default working root, target platforms, duration, resolution, subtitle languages, script length and tone, and cover mode.
-3. For multi-topic or full-pipeline work, begin with `python -m autoyy batch status <root>` and `batch plan <root> <stage>`. Resume from verified files rather than restarting.
+3. For multi-topic or full-pipeline work, begin with `python -m autoyy runtime plan <root> [--manifest <manifest.csv>]`, then use `runtime run` for authorized machine stages or `schedule`/`work claim` for external Agent stages. Resume from verified files rather than restarting.
 4. Ask only for decisions that materially change the result or permission scope. Never assume authorization to use browser cookies, download copyrighted media, bypass access controls, overwrite approved assets, or publish externally.
 
 ## Route to supporting skills and tools
@@ -29,6 +29,8 @@ Use `D:\自动剪辑` as the default working root. If the user does not provide 
 - Before writing or revising any voiceover, read `vendor/blader-humanizer/SKILL.md` completely and apply its Embedded mode. This humanization pass is mandatory, including single-topic drafts, batch generation, and rewrites.
 - Use the image-generation skill for all raster cover generation and edits. Load the relevant master cover from `assets/` as a style reference.
 - Use `python -m autoyy diagnose <project-root>` when a batch stalls or repeatedly retries; use the structured error code and recent event context instead of rerunning the whole project blindly.
+- For an existing/partially completed project, run `python -m autoyy runtime reconcile <root> --dry-run` first when state may lag behind disk artifacts. Only ffprobe/SRT-verified artifacts are promoted to ready; missing or invalid formerly-ready artifacts are downgraded.
+- Use `python -m autoyy runtime plan|run` as the long-batch control plane. Runtime may execute `source`, `subtitle`, and `package`; it must stop with `waiting_external` at `voiceover`, `publication`, or `cover`. Those stages remain lease-bound and may not be self-completed by the orchestrator.
 - Use `python -m autoyy schedule <project-root> --capabilities <csv> --strategy finish-first` for read-only agent planning, and `work claim --stage auto` to atomically claim the selected task.
 - Use `scripts/download_from_manifest.ps1` as the backward-compatible Windows entry. It delegates to the tested Python download core, validates resume artifacts before skipping them, supports optional aria2c acceleration, and supports `-Parallel N` without PowerShell runspace-specific logic.
 - If a topic folder has a video but no usable SRT, run `scripts/transcribe.py` as the local ASR fallback: it extracts audio with ffmpeg and writes `字幕.srt` (FunASR preferred for Chinese, faster-whisper already installed; resumes automatically by skipping folders that already have subtitles).
@@ -89,7 +91,8 @@ powershell -ExecutionPolicy Bypass -File scripts/download_from_manifest.ps1 `
 Optional P1 hardening flags (all backward compatible):
 
 - `-UseAria2 -Aria2Connections 8` — aria2c multi-connection per file (auto-detected; install with `winget install aria2.aria2`). Falls back to yt-dlp built-in concurrent fragments when aria2c is missing.
-- `-Parallel 4` / `autoyy download --workers 4` processes up to N topics through AutoYY's Python worker pool. The PowerShell wrapper works on both Windows PowerShell 5.1 and PowerShell 7.
+- `-Parallel 4` / `autoyy download --workers 4` sets the target topic concurrency. Python download waves adapt downward when retryable network/rate-limit failures spike and recover toward the target after stable waves. Use `--fixed-workers` only to disable adaptation for diagnosis.
+- `autoyy download --rate-limit 20M` adds an explicit per-process yt-dlp bandwidth ceiling. Transient command failures use bounded exponential backoff; authentication, unsupported URLs, and deterministic validation failures are not blindly retried.
 - `-Trace` — print every yt-dlp command for debugging.
 - Resume trusts validation, not status labels: any existing non-empty video/SRT pair is skipped only after SRT and ffprobe checks pass. `下载状态.csv` is a report, not a source of truth.
 
@@ -104,7 +107,7 @@ python scripts/transcribe.py <output-root> [--manifest <manifest.csv>] `
   --ffmpeg-location "<ffmpeg-bin-dir>"
 ```
 
-- Backend `auto` is language-aware: Chinese sources prefer FunASR, while English/other or unknown-language sources prefer multilingual faster-whisper. Manifest `source_language` overrides the CLI fallback; `--language auto` is the default. Install the corresponding optional extra when needed.
+- Backend `auto` is language-aware: Chinese sources prefer FunASR, while English/other or unknown-language sources prefer multilingual faster-whisper. Manifest `source_language` overrides the CLI fallback; `--language auto` is the default. `--device auto` selects CUDA only when a usable NVIDIA GPU is detected, otherwise CPU; CUDA/CUDNN/OOM failures fall back to CPU for that topic. Install the corresponding optional extra when needed.
 - AutoYY respects the existing Hugging Face environment. Use `--hf-endpoint` explicitly when a mirror is required; the script does not mutate the global endpoint at import time.
 - Folders are skipped only when the existing SRT actually validates. A malformed non-empty SRT is quarantined as `.invalid*` and regenerated; `--overwrite` still forces re-transcription.
 - Run `scripts/validate_subtitles.py` afterward to confirm the generated SRT parses and aligns with the video.

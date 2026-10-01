@@ -24,6 +24,8 @@ jobs:
       - run: python -m compileall -q scripts src
       - run: python -m ruff check .
       - run: python -m pytest --cov=autoyy --cov-report=term-missing --cov-fail-under=85 -q
+      - name: Runtime control-plane fault injection
+        run: python -m autoyy runtime soak --topics 8 --operations 100 --workers 4 --fault-rate 0.10 --crash-rate 0.05 --seed 7 --json
       - name: PowerShell 5.1 syntax check
         shell: powershell
         run: |
@@ -54,3 +56,5 @@ jobs:
           .\.wheel-venv\Scripts\autoyy.exe diagnose --help
           .\.wheel-venv\Scripts\autoyy.exe schedule --help
           .\.wheel-venv\Scripts\autoyy.exe transcribe --help
+          .\.wheel-venv\Scripts\autoyy.exe resources --json
+          .\.wheel-venv\Scripts\autoyy.exe runtime --help

@@ -65,10 +65,13 @@
 The preferred machine-readable command surface is `python -m autoyy`. Compatibility scripts remain for existing workflows, but their business rules delegate to `src/autoyy`.
 
 - `autoyy doctor`: dependency/assets/work-root preflight; never installs or changes the system.
+- `autoyy resources`: local CPU/RAM/NVIDIA capability snapshot and bounded worker recommendations.
+- `autoyy runtime plan|tick|run`: unattended control plane for source/subtitle/package stages; deliberately yields lease-bound voiceover/publication/cover work to external Agents/humans.
+- `autoyy runtime soak`: deterministic synthetic fault injection for scheduler/state/lease recovery invariants; never touches production projects.
 - `autoyy profile` / `autoyy batch inventory`: workload timing, size, recognized topics, and legacy topic-name diagnostics.
 - `autoyy diagnose`: local recent failure/error-code summary, stage state, and active leases.
 - `autoyy schedule`: read-only prioritized runnable queue with explicit strategy/capacity; `work claim --stage auto` performs the atomic claim.
-- `autoyy download`: validated manifest/path handling, resumable artifacts, Python worker-pool parallelism, and correct 0/1/2 exit semantics. `scripts/download_from_manifest.ps1` is a thin Windows wrapper.
+- `autoyy download`: validated manifest/path handling, resumable artifacts, adaptive wave concurrency, explicit rate limiting, retry/backoff for transient failures, and correct 0/1/2 exit semantics. `scripts/download_from_manifest.ps1` is a thin Windows wrapper.
 - `autoyy batch status|plan`: machine-readable batch inventory and dependency-aware runnable queue.
 - `autoyy work claim|heartbeat|release|status`: atomic per-topic leases for agent isolation, crash recovery, and one-topic-per-worker enforcement.
 - `autoyy voiceover scaffold|promote|validate`: structured source/script hash gate for Humanizer, fact verification, independent review, evidence coverage, and cross-topic copy checks.

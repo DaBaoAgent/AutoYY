@@ -18,7 +18,10 @@ from .io import configure_utf8_stdio
 from .peer import load_library, pattern_stats
 from .profiling import inventory_root, profile_workload
 from .publication import validate_publication_file
+from .resources import resource_plan_dict
+from .runtime import RuntimeOptions, reconcile_existing, runtime_plan, runtime_run, runtime_tick
 from .scheduler import STRATEGIES, parse_capabilities, scheduler_plan
+from .soak import run_control_plane_soak
 from .state import (
     file_fingerprint,
     force_stage,
@@ -114,6 +117,10 @@ def cmd_voiceover_attest(args: argparse.Namespace) -> int:
             Path(args.topic).resolve(),
             issuer=args.issuer,
             run_id=args.run_id,
+        max_command_attempts=args.max_command_attempts,
+        retry_base_seconds=args.retry_base_seconds,
+        retry_max_seconds=args.retry_max_seconds,
+        rate_limit=args.rate_limit,
         )
     except (OSError, ValueError) as exc:
         emit({"ok": False, "error": str(exc)})
@@ -167,6 +174,11 @@ def cmd_download(args: argparse.Namespace) -> int:
         trace=args.trace,
         js_runtimes=args.js_runtimes,
         overlap_assets=not args.no_overlap_assets,
+        max_command_attempts=args.max_command_attempts,
+        retry_base_seconds=args.retry_base_seconds,
+        retry_max_seconds=args.retry_max_seconds,
+        rate_limit=args.rate_limit,
+        adaptive_parallel=not args.fixed_workers,
     )
     code, result = run_download(options)
     emit(result, compact=args.json)
@@ -303,6 +315,85 @@ def cmd_schedule_plan(args: argparse.Namespace) -> int:
     emit(result, compact=args.json)
     return 0
 
+def cmd_resources(args: argparse.Namespace) -> int:
+    emit(resource_plan_dict(), compact=args.json)
+    return 0
+
+
+def _runtime_options(args: argparse.Namespace) -> RuntimeOptions:
+    return RuntimeOptions(
+        root=Path(args.root),
+        manifest=Path(args.manifest) if args.manifest else None,
+        yt_dlp=args.yt_dlp,
+        ffmpeg_location=args.ffmpeg_location,
+        cookies_from_browser=args.cookies_from_browser,
+        proxy=args.proxy,
+        use_aria2=args.use_aria2,
+        aria2_connections=args.aria2_connections,
+        js_runtimes=args.js_runtimes,
+        allow_legacy_ignored=args.allow_legacy_ignored,
+        max_passes=getattr(args, "max_passes", None),
+        dry_run=args.dry_run,
+        strategy=args.strategy,
+        download_workers=args.download_workers,
+        asr_workers=args.asr_workers,
+        asr_device=args.asr_device,
+        asr_model_size=args.asr_model_size,
+        hf_endpoint=args.hf_endpoint,
+        rate_limit=args.rate_limit,
+        max_command_attempts=args.max_command_attempts,
+    )
+
+
+def cmd_runtime_reconcile(args: argparse.Namespace) -> int:
+    if not Path(args.root).resolve().is_dir():
+        emit({"ok": False, "error_code": "ROOT_NOT_FOUND", "error": "root does not exist"}, compact=args.json)
+        return 2
+    result = reconcile_existing(_runtime_options(args))
+    emit(result, compact=args.json)
+    return 1 if result["issues"] else 0
+
+
+def cmd_runtime_plan(args: argparse.Namespace) -> int:
+    if not Path(args.root).resolve().is_dir():
+        emit({"ok": False, "error_code": "ROOT_NOT_FOUND", "error": "root does not exist"}, compact=args.json)
+        return 2
+    result = runtime_plan(_runtime_options(args))
+    emit(result, compact=args.json)
+    return 0 if result["runnable"] else 1
+
+
+def cmd_runtime_tick(args: argparse.Namespace) -> int:
+    if not Path(args.root).resolve().is_dir():
+        emit({"ok": False, "error_code": "ROOT_NOT_FOUND", "error": "root does not exist"}, compact=args.json)
+        return 2
+    code, result = runtime_tick(_runtime_options(args))
+    emit(result, compact=args.json)
+    return code
+
+
+def cmd_runtime_run(args: argparse.Namespace) -> int:
+    if not Path(args.root).resolve().is_dir():
+        emit({"ok": False, "error_code": "ROOT_NOT_FOUND", "error": "root does not exist"}, compact=args.json)
+        return 2
+    code, result = runtime_run(_runtime_options(args))
+    emit(result, compact=args.json)
+    return code
+
+
+def cmd_runtime_soak(args: argparse.Namespace) -> int:
+    try:
+        result = run_control_plane_soak(
+            topics=args.topics, operations=args.operations, workers=args.workers,
+            fault_rate=args.fault_rate, crash_rate=args.crash_rate, seed=args.seed,
+        )
+    except ValueError as exc:
+        emit({"ok": False, "error_code": "INVALID_SOAK_OPTIONS", "error": str(exc)}, compact=args.json)
+        return 2
+    emit(result, compact=args.json)
+    return 0 if result["invariants_ok"] else 1
+
+
 def cmd_work_claim(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
     try:
@@ -352,6 +443,8 @@ def cmd_transcribe(args: argparse.Namespace) -> int:
     command = [args.root]
     if args.manifest:
         command += ["--manifest", args.manifest]
+    for topic in args.topics or []:
+        command += ["--topic", topic]
     command += [
         "--backend", args.backend, "--language", args.language,
         "--model-size", args.model_size, "--device", args.device,
@@ -380,6 +473,53 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--repo-root")
     doctor.set_defaults(func=cmd_doctor)
+
+    resources = sub.add_parser("resources")
+    resources.set_defaults(func=cmd_resources)
+
+    runtime = sub.add_parser("runtime")
+    runtime_sub = runtime.add_subparsers(dest="runtime_command", required=True)
+    def add_runtime_common(target):
+        target.add_argument("root")
+        target.add_argument("--manifest")
+        target.add_argument("--yt-dlp", default="yt-dlp")
+        target.add_argument("--ffmpeg-location")
+        target.add_argument("--cookies-from-browser")
+        target.add_argument("--proxy")
+        target.add_argument("--use-aria2", action="store_true")
+        target.add_argument("--aria2-connections", type=int, choices=range(1, 17), default=8)
+        target.add_argument("--js-runtimes")
+        target.add_argument("--allow-legacy-ignored", action="store_true")
+        target.add_argument("--strategy", choices=sorted(STRATEGIES), default="finish-first")
+        target.add_argument("--download-workers", type=int, choices=range(1, 9))
+        target.add_argument("--asr-workers", type=int, choices=range(1, 5))
+        target.add_argument("--asr-device", choices=["cpu", "cuda"])
+        target.add_argument("--asr-model-size", default="medium")
+        target.add_argument("--hf-endpoint")
+        target.add_argument("--rate-limit")
+        target.add_argument("--max-command-attempts", type=int, choices=range(1, 7), default=3)
+        target.add_argument("--dry-run", action="store_true")
+    runtime_reconcile = runtime_sub.add_parser("reconcile")
+    add_runtime_common(runtime_reconcile)
+    runtime_reconcile.set_defaults(func=cmd_runtime_reconcile)
+    runtime_plan_parser = runtime_sub.add_parser("plan")
+    add_runtime_common(runtime_plan_parser)
+    runtime_plan_parser.set_defaults(func=cmd_runtime_plan)
+    runtime_tick_parser = runtime_sub.add_parser("tick")
+    add_runtime_common(runtime_tick_parser)
+    runtime_tick_parser.set_defaults(func=cmd_runtime_tick)
+    runtime_run_parser = runtime_sub.add_parser("run")
+    add_runtime_common(runtime_run_parser)
+    runtime_run_parser.add_argument("--max-passes", type=int, choices=range(1, 10001))
+    runtime_run_parser.set_defaults(func=cmd_runtime_run)
+    runtime_soak = runtime_sub.add_parser("soak")
+    runtime_soak.add_argument("--topics", type=int, default=80)
+    runtime_soak.add_argument("--operations", type=int, default=1000)
+    runtime_soak.add_argument("--workers", type=int, default=6)
+    runtime_soak.add_argument("--fault-rate", type=float, default=0.05)
+    runtime_soak.add_argument("--crash-rate", type=float, default=0.02)
+    runtime_soak.add_argument("--seed", type=int, default=1)
+    runtime_soak.set_defaults(func=cmd_runtime_soak)
 
     profile = sub.add_parser("profile")
     profile.add_argument("root")
@@ -450,6 +590,11 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("--trace", action="store_true")
     download.add_argument("--no-overlap-assets", action="store_true")
     download.add_argument("--js-runtimes")
+    download.add_argument("--rate-limit")
+    download.add_argument("--max-command-attempts", type=int, choices=range(1, 7), default=3)
+    download.add_argument("--retry-base-seconds", type=float, default=1.0)
+    download.add_argument("--retry-max-seconds", type=float, default=15.0)
+    download.add_argument("--fixed-workers", action="store_true", help="disable adaptive concurrency changes")
     download.set_defaults(func=cmd_download)
 
     peer = sub.add_parser("peer")
@@ -523,10 +668,11 @@ def build_parser() -> argparse.ArgumentParser:
     transcribe = sub.add_parser("transcribe")
     transcribe.add_argument("root")
     transcribe.add_argument("--manifest")
+    transcribe.add_argument("--topic", action="append", dest="topics")
     transcribe.add_argument("--backend", choices=["auto", "funasr", "whisper"], default="auto")
     transcribe.add_argument("--language", default="auto")
     transcribe.add_argument("--model-size", default="medium")
-    transcribe.add_argument("--device", default="cpu")
+    transcribe.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     transcribe.add_argument("--beam-size", type=int, default=5)
     transcribe.add_argument("--ffmpeg-location")
     transcribe.add_argument("--ffmpeg-timeout", type=int, default=7200)

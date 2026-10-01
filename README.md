@@ -36,6 +36,11 @@ For Codex Skill installation, clone or junction the repository into the Codex sk
 
 ```powershell
 python -m autoyy doctor
+python -m autoyy resources
+python -m autoyy runtime reconcile <project-root> --dry-run
+python -m autoyy runtime plan <project-root> --manifest <manifest.csv>
+python -m autoyy runtime run <project-root> --manifest <manifest.csv>
+python -m autoyy runtime soak --topics 80 --operations 1000 --workers 8 --fault-rate 0.10
 python -m autoyy profile <project-root>
 python -m autoyy diagnose <project-root>
 python -m autoyy schedule <project-root> --capabilities source,subtitle,voiceover --strategy finish-first
@@ -57,6 +62,8 @@ python -m autoyy state force <project-root> <topic> <stage> --reason "rerun requ
 `autoyy profile` reports real inventory size, discovery/state timing, ignored legacy topic candidates, and historical per-topic latency from local run events. `autoyy diagnose` summarizes recent structured error codes, active leases, failed/blocked stages, and actionable hints. `autoyy schedule` is read-only; `work claim --stage auto` applies the same scheduler and creates the atomic lease.
 
 Scheduler strategies are `finish-first` (default: finish partially completed topics), `repair-first` (prioritize stale/failed work), and `source-first` (feed upstream stages). Stage concurrency budgets prevent an agent swarm from overloading download/ASR/cover resources.
+
+`autoyy runtime reconcile` validates existing video/SRT artifacts against disk before resuming older projects; `runtime run` performs this reconciliation once at startup. `autoyy runtime` is the unattended control plane. Runtime completion is conservative: active leases report `waiting_active`, quality/other blocked stages report `blocked_work`, missing operator input reports `waiting_input`, and lease-bound editorial/visual work reports `waiting_external`; none of these states are reported as complete. The default pass budget scales with topic count; an ASR topic that fails is isolated for the remainder of that run so other topics can continue, then becomes retryable again on the next run. It may automatically execute only deterministic machine stages (`source`, `subtitle`, `package`). It stops at `voiceover`, `publication`, or `cover` with `waiting_external`; those stages remain lease-bound Agent/human work and keep their existing provenance/quality gates. Runtime planning fails closed on ignored legacy topic directories or a missing manifest unless the operator explicitly resolves/accepts the condition.
 
 `--json` may be placed before or after the subcommand for agent-friendly compact output. The compatibility scripts under `scripts/` remain available for existing automation. Exit-code contract is `0=success`, `1=work completed with failed/incomplete items`, and `2=invalid input, missing required dependency, or unusable state/schema`.
 
@@ -91,9 +98,9 @@ The user evidence library also defaults to the project `.autoyy/peer-hit-library
 
 Long-running download/ASR work appends local structured events to `<project>/.autoyy/events.jsonl`. The log is local-only, rotates at 10 MiB, includes run IDs, topic/stage status, elapsed time, and stable error codes, and is consumed by `profile`/`diagnose`. It is not remote telemetry.
 
-Large media files use a sampled state fingerprint (size plus beginning/middle/end SHA-256 samples) after ffprobe verification instead of rereading multi-gigabyte media end to end. Text and small files still use full SHA-256. Download overlaps subtitle discovery with video transfer by default; use `--no-overlap-assets` only for troubleshooting. `download --workers N` is an alias for the compatibility `--parallel N`.
+Large media files use a sampled state fingerprint (size plus beginning/middle/end SHA-256 samples) after ffprobe verification instead of rereading multi-gigabyte media end to end. Text and small files still use full SHA-256. Download overlaps subtitle discovery with video transfer by default. Worker concurrency is adaptive by default: a wave with substantial retryable network/rate-limit failures reduces the next wave, then stable waves recover toward the requested worker count. Use `--fixed-workers` only for troubleshooting; `--rate-limit` adds an explicit yt-dlp bandwidth ceiling. Command-level retries use bounded exponential backoff and stable failure classes.
 
-Faster-whisper reads media directly and does not require an intermediate WAV. FunASR still uses ffmpeg audio extraction. `transcribe --workers 1..4` enables independent backend model instances; the default remains 1 to avoid accidental RAM/VRAM exhaustion. Final package validation defaults to four workers based on the real workload benchmark in `docs/performance-baseline.md`.
+Faster-whisper reads media directly and does not require an intermediate WAV. FunASR still uses ffmpeg audio extraction. `transcribe --device auto` chooses CUDA only when a usable NVIDIA GPU is visible; otherwise it uses CPU. A CUDA/CUDNN/OOM failure falls back to CPU for that topic instead of losing the batch. `transcribe --workers 1..4` remains bounded to avoid accidental RAM/VRAM exhaustion. Runtime also auto-sizes download/ASR/package workers from detected CPU, RAM, and GPU capacity. Final package validation defaults to four workers based on the recorded workload benchmark.
 
 ## Cover workflows
 

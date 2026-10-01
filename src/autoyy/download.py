@@ -15,6 +15,7 @@ from .manifest import ManifestRow, is_supported_youtube_url, load_manifest
 from .media import find_primary_subtitle, find_primary_video, probe_media
 from .observability import RunRecorder, record_event
 from .paths import safe_child_path
+from .retry import RetryPolicy, classify_failure, is_retryable
 from .state import file_fingerprint, media_fingerprint, recover_running, set_stage, update_state
 from .subtitles import validate_srt
 
@@ -38,6 +39,11 @@ class DownloadOptions:
     command_timeout: int = 7200
     overlap_assets: bool = True
     run_id: str = ""
+    max_command_attempts: int = 3
+    retry_base_seconds: float = 1.0
+    retry_max_seconds: float = 15.0
+    rate_limit: str | None = None
+    adaptive_parallel: bool = True
 
 
 def _executable(value: str) -> str | None:
@@ -70,6 +76,8 @@ def _optional_args(options: DownloadOptions) -> list[str]:
         args += ["--proxy", options.proxy]
     if options.js_runtimes:
         args += ["--js-runtimes", options.js_runtimes]
+    if options.rate_limit:
+        args += ["--limit-rate", options.rate_limit]
     return args
 
 
@@ -85,10 +93,42 @@ def _redact_command(command: list[str]) -> list[str]:
 def _run(command: list[str], options: DownloadOptions) -> subprocess.CompletedProcess[str]:
     if options.trace:
         print("TRACE>", subprocess.list2cmdline(_redact_command(command)))
-    try:
-        return subprocess.run(command, capture_output=True, text=True, timeout=options.command_timeout, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(f"external command unavailable/timeout: {exc}") from exc
+    policy = RetryPolicy(
+        max_attempts=options.max_command_attempts,
+        base_seconds=options.retry_base_seconds,
+        max_seconds=options.retry_max_seconds,
+    )
+    for attempt in range(1, policy.max_attempts + 1):
+        try:
+            proc = subprocess.run(
+                command, capture_output=True, text=True,
+                timeout=options.command_timeout, check=False,
+            )
+        except OSError as exc:
+            raise RuntimeError(f"external command unavailable/timeout: {exc}") from exc
+        except subprocess.TimeoutExpired as exc:
+            code = "PROCESS_TIMEOUT"
+            if attempt >= policy.max_attempts:
+                raise RuntimeError(f"external command timeout after {attempt} attempts: {exc}") from exc
+            delay = policy.delay(attempt, seed=options.run_id)
+            record_event(
+                options.output_root, "command_retry", run_id=options.run_id,
+                command="download", status="retry", code=code,
+                details={"attempt": attempt, "next_delay_s": delay},
+            )
+            time.sleep(delay)
+            continue
+        code = classify_failure(returncode=proc.returncode, stderr=proc.stderr)
+        if proc.returncode == 0 or attempt >= policy.max_attempts or not is_retryable(code):
+            return proc
+        delay = policy.delay(attempt, seed=options.run_id)
+        record_event(
+            options.output_root, "command_retry", run_id=options.run_id,
+            command="download", status="retry", code=code,
+            details={"attempt": attempt, "next_delay_s": delay},
+        )
+        time.sleep(delay)
+    raise RuntimeError("external command retry loop exhausted")
 
 
 def _select_subtitle_language(row: ManifestRow, options: DownloadOptions, yt_dlp: str) -> str | None:
@@ -214,6 +254,9 @@ def _download_subtitle(row: ManifestRow, topic_dir: Path, options: DownloadOptio
 
 
 def _download_error_code(message: str) -> str:
+    classified = classify_failure(stderr=message)
+    if classified != "UNKNOWN_FAILURE":
+        return classified
     lowered = message.lower()
     if "video failed" in lowered or "no non-empty video" in lowered:
         return "DOWNLOAD_VIDEO_FAILED"
@@ -311,6 +354,10 @@ def run_download(options: DownloadOptions) -> tuple[int, dict[str, object]]:
         return _usage_error("MANIFEST_INVALID", str(exc))
     if options.parallel < 1 or options.parallel > 8:
         return _usage_error("INVALID_WORKERS", "parallel/workers must be between 1 and 8")
+    if options.max_command_attempts < 1 or options.max_command_attempts > 6:
+        return _usage_error("INVALID_RETRY_ATTEMPTS", "max_command_attempts must be between 1 and 6")
+    if options.retry_base_seconds < 0 or options.retry_max_seconds < 0 or options.retry_base_seconds > options.retry_max_seconds:
+        return _usage_error("INVALID_RETRY_BACKOFF", "retry backoff must be non-negative and base <= max")
     if options.aria2_connections < 1 or options.aria2_connections > 16:
         return _usage_error("INVALID_ARIA2_CONNECTIONS", "aria2_connections must be between 1 and 16")
     if options.min_height < 144 or options.max_height > 4320 or options.min_height > options.max_height:
@@ -340,15 +387,39 @@ def run_download(options: DownloadOptions) -> tuple[int, dict[str, object]]:
     options.run_id = recorder.run_id
     results: list[dict[str, object]] = []
     interrupted = False
+    initial_workers = min(options.parallel, 8)
     try:
         if options.parallel <= 1:
             for row in rows:
                 _checkpoint_result(options, results, process_row(row, options, yt_dlp, ffprobe))
         else:
-            with ThreadPoolExecutor(max_workers=min(options.parallel, 8), thread_name_prefix="autoyy-download") as pool:
-                futures = {pool.submit(process_row, row, options, yt_dlp, ffprobe): row.folder_name for row in rows}
-                for future in as_completed(futures):
-                    _checkpoint_result(options, results, future.result())
+            target_workers = min(options.parallel, 8)
+            current_workers = target_workers
+            cursor = 0
+            adaptive_codes = {"RATE_LIMITED", "NETWORK_TIMEOUT", "NETWORK_TRANSIENT", "REMOTE_5XX", "PROCESS_TIMEOUT"}
+            while cursor < len(rows):
+                wave_size = min(len(rows) - cursor, max(current_workers * 2, current_workers))
+                wave = rows[cursor:cursor + wave_size]
+                wave_results: list[dict[str, object]] = []
+                with ThreadPoolExecutor(max_workers=current_workers, thread_name_prefix="autoyy-download") as pool:
+                    futures = {pool.submit(process_row, row, options, yt_dlp, ffprobe): row.folder_name for row in wave}
+                    for future in as_completed(futures):
+                        item = future.result()
+                        wave_results.append(item)
+                        _checkpoint_result(options, results, item)
+                cursor += wave_size
+                retryable_failures = sum(str(item.get("error_code", "")) in adaptive_codes for item in wave_results)
+                previous = current_workers
+                if options.adaptive_parallel and retryable_failures * 4 >= len(wave_results) and current_workers > 1:
+                    current_workers = max(1, current_workers // 2)
+                elif options.adaptive_parallel and retryable_failures == 0 and current_workers < target_workers:
+                    current_workers += 1
+                if current_workers != previous:
+                    record_event(
+                        options.output_root, "download_concurrency_adjust", run_id=options.run_id,
+                        command="download", status="ready",
+                        details={"from": previous, "to": current_workers, "retryable_failures": retryable_failures, "wave_size": len(wave_results)},
+                    )
     except KeyboardInterrupt:
         interrupted = True
     finally:
@@ -366,6 +437,8 @@ def run_download(options: DownloadOptions) -> tuple[int, dict[str, object]]:
         "failed_count": failed,
         "interrupted": interrupted,
         "topic_elapsed_ms_sum": total_elapsed_ms,
+        "initial_workers": initial_workers,
+        "adaptive_parallel": options.adaptive_parallel,
         "status_csv": str(options.output_root / "下载状态.csv"),
         "results": results,
     }

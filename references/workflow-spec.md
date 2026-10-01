@@ -85,6 +85,14 @@ Confirm:
 
 Report complete and incomplete counts, missing items, blocked reasons, subtitle fallback languages, script character range, cover ratio results, manifest path, and output root.
 
+## Unattended runtime control plane
+
+Use `autoyy runtime reconcile --dry-run` to audit existing artifacts when adopting an older project, then use `autoyy runtime plan` before a long batch and `autoyy runtime run` only after the inventory/manifest/permission scope is valid. The runtime may automatically execute deterministic machine stages: source acquisition from an approved manifest, subtitle acquisition/ASR, and package validation. It may not create or self-approve voiceover, publication, or cover content. Those stages remain external lease work and cause runtime status `waiting_external`.
+
+Runtime state reporting is fail-closed: active leases, blocked stages, missing input, and external Agent work remain explicit non-complete statuses. The automatic pass budget scales with topic count, and a subtitle/ASR failure is quarantined from the remainder of the current run so unrelated topics can continue. Runtime resource selection is bounded and local: CPU/RAM/NVIDIA detection chooses default download, ASR, and package worker budgets. Download commands retry only classified transient failures with exponential backoff and adapt future wave concurrency when rate-limit/network failures spike. ASR uses automatic CPU/CUDA selection and may fall back from CUDA/CUDNN/OOM to CPU without changing the content gate.
+
+`autoyy runtime soak` is a development/CI fault-injection check, not a production content command. It must leave zero duplicate claims and zero dangling leases.
+
 ## Deterministic batch voiceover gate
 
 For batches of two or more topics, run `autoyy batch plan <project-root> voiceover` and claim work through `autoyy work claim`. The lease layer machine-enforces one active topic per worker and prevents two workers from claiming the same topic. Each topic gets an isolated source context and must complete its own source read, candidate, Humanizer pass, fact check, reviewer, and machine gate.

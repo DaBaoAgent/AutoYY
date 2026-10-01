@@ -5,6 +5,11 @@ All notable changes to AutoYY are documented here.
 ## [Unreleased]
 
 ### Added
+- Unattended `autoyy runtime plan|tick|run` control plane that executes only deterministic machine stages and stops at lease-bound editorial/visual stages.
+- CPU/RAM/NVIDIA resource detection with automatic ASR device and bounded worker recommendations.
+- Deterministic control-plane soak/fault-injection command for lease, state recovery, capacity, and scheduler invariants.
+- Stable retry classification plus bounded exponential backoff for transient download command failures.
+- Verified artifact reconciliation for safely adopting older projects without redownloading already-valid media/subtitles.
 - Workload profiling, legacy topic inventory diagnostics, local JSONL run observability, and `autoyy diagnose`.
 - Deterministic automatic scheduler with stage capacities plus finish-first, repair-first, and source-first strategies.
 - Explicit ASR worker pool and direct faster-whisper media decoding.
@@ -18,6 +23,8 @@ All notable changes to AutoYY are documented here.
 - Optional parallel package/voiceover validation with bounded `--workers`.
 
 ### Changed
+- Download worker pools adapt between waves when retryable network/rate-limit failures spike; explicit `--rate-limit` and `--fixed-workers` controls are available.
+- ASR defaults to automatic CPU/CUDA selection and falls back from CUDA/CUDNN/OOM failures to CPU per topic.
 - Final package validation now defaults to four workers based on the recorded real-workload benchmark.
 - Large verified media uses sampled state fingerprints instead of full-file rereads; small/text artifacts retain full SHA-256.
 - Download overlaps subtitle discovery with video transfer and preserves source=ready when only subtitle acquisition fails, enabling immediate ASR fallback.

@@ -71,6 +71,23 @@ Default scheduler stage capacities are:
 
 Available strategies are `finish-first` (default), `repair-first`, and `source-first`. These alter queue priority only; dependency gates and lease exclusivity do not change.
 
+## Existing-artifact reconciliation
+
+A read-only reconciliation pass over the representative real batch verified 13 already-present standard-topic source videos with ffprobe plus sampled media fingerprints in about 1.1 seconds. Those topics can resume as `source=ready` instead of being downloaded again. Reconciliation does not trust file existence alone, and `--dry-run` performs no state mutation.
+
+## Control-plane soak and fault injection
+
+A deterministic 80-topic scheduler/state/lease soak used eight simulated workers with injected transient stage failures; crash injection additionally expires held leases without releasing them to model killed workers or machine restarts. It executed 561 state transitions, including 46 ordinary stage failures plus 35 simulated worker crashes, and recovered all 80 topics to complete.
+
+- duplicate topic claims: 0
+- dangling leases: 0
+- stage-capacity violations: 0
+- failed stages remaining: 0
+- elapsed: 32.714 s
+- control-plane throughput: about 17.15 transitions/s
+
+This benchmark intentionally excludes media/network/model time. It protects the unattended orchestration control plane from deadlocks, lost work, duplicate claims, and unrecovered transient failures. CI runs a smaller deterministic soak on every push.
+
 ## Regression rule
 
 Do not accept a performance optimization that weakens deterministic quality gates, source/subtitle verification, one-topic writer isolation, state revision safety, or package validation. Prefer structural reductions in redundant I/O and waiting over looser validation thresholds.

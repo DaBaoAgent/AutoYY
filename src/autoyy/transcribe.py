@@ -15,6 +15,7 @@ from .manifest import load_manifest
 from .media import find_primary_subtitle, find_primary_video
 from .observability import RunRecorder, record_event
 from .paths import discover_topics, safe_child_path
+from .resources import detect_resources
 from .result import EXIT_FAILED, EXIT_OK, EXIT_USAGE
 from .state import file_fingerprint, media_fingerprint, recover_running, set_stage, update_state
 from .subtitles import validate_srt
@@ -198,19 +199,34 @@ def process_folder(folder: Path, args: argparse.Namespace, backend_name: str, ff
                 invalid_target = invalid_existing.with_name(invalid_existing.name + f".invalid-{counter}")
                 counter += 1
             invalid_existing.replace(invalid_target)
+        cpu_fallback = False
         if backend == "whisper":
-            segments = transcribe_whisper(video, args.model_size, language, args.device, args.vad, args.beam_size)
+            try:
+                segments = transcribe_whisper(video, args.model_size, language, args.device, args.vad, args.beam_size)
+            except Exception as exc:  # noqa: BLE001
+                lowered = str(exc).lower()
+                if args.device != "cuda" or not any(token in lowered for token in ("out of memory", "cuda", "cudnn", "cublas")):
+                    raise
+                segments = transcribe_whisper(video, args.model_size, language, "cpu", args.vad, args.beam_size)
+                cpu_fallback = True
         else:
             with tempfile.TemporaryDirectory(prefix="autoyy-asr-") as tmp:
                 wav = Path(tmp) / "audio.wav"
                 extract_audio(video, wav, ffmpeg, args.ffmpeg_timeout)
-                segments = transcribe_funasr(wav, args.device)
+                try:
+                    segments = transcribe_funasr(wav, args.device)
+                except Exception as exc:  # noqa: BLE001
+                    lowered = str(exc).lower()
+                    if args.device != "cuda" or not any(token in lowered for token in ("out of memory", "cuda", "cudnn", "cublas")):
+                        raise
+                    segments = transcribe_funasr(wav, "cpu")
+                    cpu_fallback = True
         target = folder / "字幕.srt"
         write_srt_atomic(target, segments)
         report = validate_srt(target)
         if not report["valid"]:
             raise RuntimeError("generated subtitle failed SRT validation: " + "; ".join(report["issues"][:3]))
-        result = {"folder": folder.name, "status": "ready", "reason": "transcribed", "segments": len(segments), "backend": backend, "language": language or "auto", "error_code": ""}
+        result = {"folder": folder.name, "status": "ready", "reason": "transcribed", "segments": len(segments), "backend": backend, "language": language or "auto", "device": "cpu" if cpu_fallback else args.device, "cpu_fallback": cpu_fallback, "error_code": ""}
     except OSError as exc:
         result = {"folder": folder.name, "status": "failed", "reason": "disk_or_file_error", "error_code": "DISK_OR_FILE_ERROR", "error": str(exc)[:300]}
     except Exception as exc:  # noqa: BLE001
@@ -222,10 +238,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AutoYY local ASR fallback: source video -> 字幕.srt")
     parser.add_argument("output_root", type=Path)
     parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--topic", action="append", dest="topics", help="process only this exact topic folder; repeatable")
     parser.add_argument("--backend", choices=["auto", "funasr", "whisper"], default="auto")
     parser.add_argument("--model-size", default="medium")
     parser.add_argument("--language", default="auto")
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--ffmpeg-location")
     parser.add_argument("--ffmpeg-timeout", type=int, default=7200)
     parser.add_argument("--hf-endpoint")
@@ -243,6 +260,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     configure_utf8_stdio()
     args = build_parser().parse_args(argv)
+    if args.device == "auto":
+        args.device = detect_resources().asr_device
     root = args.output_root.resolve()
     if not root.is_dir():
         print(f"Directory does not exist: {root}")
@@ -260,6 +279,14 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as exc:
         print(str(exc))
         return EXIT_USAGE
+    if args.topics:
+        requested = list(dict.fromkeys(args.topics))
+        by_name = {folder.name: folder for folder in folders}
+        missing = [name for name in requested if name not in by_name]
+        if missing:
+            print("Requested topic directories not found: " + ", ".join(missing))
+            return EXIT_USAGE
+        folders = [by_name[name] for name in requested]
     if not folders:
         print("No topic directories found")
         return EXIT_USAGE
@@ -341,7 +368,8 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
     results.sort(key=lambda item: str(item.get("folder", "")))
     for item in results:
-        print(f"{item['status']:8s} {item['folder']} {item['reason']}")
+        detail = str(item.get("error") or item["reason"])
+        print(f"{item['status']:8s} {item['folder']} {detail}")
     failed = sum(item["status"] != "ready" for item in results)
     ready = sum(item["status"] == "ready" for item in results)
     recorder.finish(status="success" if not failed else "failed", code="" if not failed else "ASR_BATCH_INCOMPLETE", details={"ready": ready, "failed": failed, "workers": args.workers})

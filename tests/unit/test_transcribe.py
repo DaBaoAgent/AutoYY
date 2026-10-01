@@ -90,3 +90,52 @@ def test_invalid_subtitle_is_not_quarantined_when_backend_unavailable(
     assert result["status"] == "failed"
     assert subtitle.is_file()
     assert not (folder / "字幕.srt.invalid").exists()
+
+
+def test_whisper_cuda_oom_falls_back_to_cpu(tmp_path, monkeypatch):
+    import autoyy.transcribe as tr
+
+    folder = tmp_path / "01-topic"
+    folder.mkdir()
+    (folder / "高清源视频.mp4").write_bytes(b"video")
+    args = tr.build_parser().parse_args([str(tmp_path), "--device", "cuda"])
+    monkeypatch.setattr(tr, "resolve_backend", lambda *_a, **_k: "whisper")
+    devices = []
+
+    def fake_whisper(_media, _model, _language, device, _vad, _beam):
+        devices.append(device)
+        if device == "cuda":
+            raise RuntimeError("CUDA out of memory")
+        return [(0.0, 1.0, "fallback ok")]
+
+    monkeypatch.setattr(tr, "transcribe_whisper", fake_whisper)
+    result = tr.process_folder(folder, args, "whisper", None, "en")
+    assert result["status"] == "ready"
+    assert result["cpu_fallback"] is True
+    assert result["device"] == "cpu"
+    assert devices == ["cuda", "cpu"]
+
+
+def test_topic_filter_limits_batch_to_exact_requested_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("01-topic", "02-topic"):
+        folder = tmp_path / name
+        folder.mkdir()
+        (folder / "高清源视频.mp4").write_bytes(b"video")
+    seen = []
+
+    def fake_process(folder, *_args, **_kwargs):
+        seen.append(folder.name)
+        return {
+            "folder": folder.name,
+            "status": "pending",
+            "reason": "dry_run",
+            "error_code": "",
+            "elapsed_ms": 0.0,
+        }
+
+    monkeypatch.setattr(tr, "process_folder", fake_process)
+    code = tr.main([str(tmp_path), "--dry-run", "--topic", "02-topic"])
+    assert code == 0
+    assert seen == ["02-topic"]
