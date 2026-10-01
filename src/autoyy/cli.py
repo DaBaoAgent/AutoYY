@@ -3,8 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
-import subprocess
-import sys
 from datetime import date
 from pathlib import Path
 
@@ -13,6 +11,7 @@ from .config import peer_library
 from .deliverables import validate_root
 from .doctor import run_doctor
 from .download import DownloadOptions, run_download
+from .io import configure_utf8_stdio
 from .peer import load_library, pattern_stats
 from .publication import validate_publication_file
 from .state import (
@@ -24,6 +23,7 @@ from .state import (
     set_approved,
     set_stage,
 )
+from .transcribe import main as transcribe_main
 from .voiceover import create_quality_template, promote_candidate, validate_voiceover_batch
 
 
@@ -42,8 +42,13 @@ def cmd_validate(args: argparse.Namespace) -> int:
     if not root.is_dir():
         emit({"valid": False, "error": "root does not exist"})
         return 2
+    folders = sorted(p for p in root.iterdir() if p.is_dir() and p.name[:2].isdigit() and p.name[2:3] == "-")
+    if not folders and not args.allow_empty:
+        result = validate_root(root, allow_empty=False, expected_count=args.expected_count, require_quality=not args.skip_quality_record, ffprobe=None)
+        emit(result, compact=args.json)
+        return 1
     ffprobe = args.ffprobe or shutil.which("ffprobe")
-    if not ffprobe:
+    if folders and not ffprobe:
         emit({"valid": False, "error": "ffprobe is required for final media validation"})
         return 2
     result = validate_root(root, allow_empty=args.allow_empty, expected_count=args.expected_count, require_quality=not args.skip_quality_record, ffprobe=ffprobe)
@@ -194,16 +199,11 @@ def cmd_state_force(args: argparse.Namespace) -> int:
 
 
 def cmd_transcribe(args: argparse.Namespace) -> int:
-    repo_root = Path(__file__).resolve().parents[2]
-    script = repo_root / "scripts" / "transcribe.py"
-    if not script.is_file():
-        emit({"ok": False, "error": "transcribe compatibility script not found"})
-        return 2
-    command = [sys.executable, str(script), args.root]
+    command = [args.root]
     if args.manifest:
         command += ["--manifest", args.manifest]
     command += ["--backend", args.backend]
-    return subprocess.call(command)
+    return transcribe_main(command)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -302,6 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)
