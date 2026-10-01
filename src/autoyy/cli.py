@@ -24,7 +24,12 @@ from .state import (
     set_stage,
 )
 from .transcribe import main as transcribe_main
-from .voiceover import create_quality_template, promote_candidate, validate_voiceover_batch
+from .voiceover import (
+    attest_quality_file,
+    create_quality_template,
+    promote_candidate,
+    validate_voiceover_batch,
+)
 
 
 def emit(payload: object, *, compact: bool = False) -> None:
@@ -83,6 +88,20 @@ def cmd_voiceover_scaffold(args: argparse.Namespace) -> int:
         emit({"ok": False, "error": str(exc)})
         return 2
     emit({"ok": True, "quality_file": str(path)})
+    return 0
+
+
+def cmd_voiceover_attest(args: argparse.Namespace) -> int:
+    try:
+        path = attest_quality_file(
+            Path(args.topic).resolve(),
+            issuer=args.issuer,
+            run_id=args.run_id,
+        )
+    except (OSError, ValueError) as exc:
+        emit({"ok": False, "error": str(exc)})
+        return 2
+    emit({"ok": True, "quality_file": str(path), "attested": True})
     return 0
 
 
@@ -236,6 +255,11 @@ def build_parser() -> argparse.ArgumentParser:
     scaffold.add_argument("topic")
     scaffold.add_argument("--voice-profile", choices=["default", "laorou"], default="default")
     scaffold.set_defaults(func=cmd_voiceover_scaffold)
+    attest = voice_sub.add_parser("attest")
+    attest.add_argument("topic")
+    attest.add_argument("--issuer", default="autoyy-independent-verifier")
+    attest.add_argument("--run-id")
+    attest.set_defaults(func=cmd_voiceover_attest)
     voice_validate = voice_sub.add_parser("validate")
     voice_validate.add_argument("root")
     voice_validate.add_argument("--skip-quality-record", action="store_true")

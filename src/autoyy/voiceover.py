@@ -4,9 +4,11 @@ import hashlib
 import json
 import re
 import shutil
+import uuid
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from .attestation import attest_quality_record, verify_quality_attestation
 from .subtitles import srt_to_text
 
 QUALITY_RELATIVE = Path(".autoyy") / "voiceover-quality.json"
@@ -78,6 +80,7 @@ def create_quality_template(topic: Path, script_path: Path | None = None, *, voi
         "srt_full_read": False,
         "voice_profile": voice_profile,
         "attempt": 1,
+        "writer": {"run_id": str(uuid.uuid4())},
         "humanizer": {"pass": False, "mode": "embedded", "script_sha256": script_hash},
         "fact_check": {
             "pass": False,
@@ -89,6 +92,7 @@ def create_quality_template(topic: Path, script_path: Path | None = None, *, voi
         "reviewer": {
             "pass": False,
             "independent": False,
+            "run_id": "",
             "source_sha256": source_hash,
             "script_sha256": script_hash,
             "reason_codes": [],
@@ -100,6 +104,23 @@ def create_quality_template(topic: Path, script_path: Path | None = None, *, voi
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def attest_quality_file(
+    topic: Path,
+    *,
+    issuer: str = "autoyy-independent-verifier",
+    run_id: str | None = None,
+) -> Path:
+    path = quality_path(topic)
+    record = load_quality(topic)
+    if not record:
+        raise FileNotFoundError("structured quality record missing or invalid")
+    attest_quality_record(record, issuer=issuer, run_id=run_id)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
     return path
 
@@ -186,6 +207,7 @@ def validate_voiceover(
                 issues.append("quality source hash stale")
             if record.get("script_sha256") != script_hash:
                 issues.append("quality script hash stale")
+            issues.extend(verify_quality_attestation(record))
             if record.get("srt_full_read") is not True:
                 issues.append("srt_full_read is not true")
             attempt = record.get("attempt")

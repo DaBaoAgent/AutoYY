@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,12 +29,11 @@ def now_iso() -> str:
 def file_fingerprint(path: Path) -> str:
     if not path.is_file():
         return "missing"
-    stat = path.stat()
     digest = hashlib.sha256()
-    digest.update(str(stat.st_size).encode())
-    digest.update(b":")
-    digest.update(str(stat.st_mtime_ns).encode())
-    return digest.hexdigest()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
 
 
 def state_path(root: Path) -> Path:
@@ -40,7 +41,7 @@ def state_path(root: Path) -> Path:
 
 
 def empty_state() -> dict[str, Any]:
-    return {"schema_version": SCHEMA_VERSION, "updated_at": now_iso(), "topics": {}}
+    return {"schema_version": SCHEMA_VERSION, "revision": 0, "updated_at": now_iso(), "topics": {}}
 
 
 def load_state(root: Path, *, create: bool = False) -> dict[str, Any]:
@@ -58,14 +59,51 @@ def load_state(root: Path, *, create: bool = False) -> dict[str, Any]:
     return data
 
 
-def save_state(root: Path, state: dict[str, Any]) -> Path:
-    state["updated_at"] = now_iso()
-    path = state_path(root)
+def _acquire_lock(root: Path, timeout: float = 10.0) -> Path:
+    path = state_path(root).with_suffix(".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(f".tmp-{os.getpid()}")
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
-    return path
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{os.getpid()} {time.time()}".encode())
+            os.close(fd)
+            return path
+        except FileExistsError:
+            try:
+                if time.time() - path.stat().st_mtime > 30:
+                    path.unlink(missing_ok=True)
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                raise OSError("state lock timeout") from None
+            time.sleep(0.05)
+
+
+def save_state(root: Path, state: dict[str, Any]) -> Path:
+    path = state_path(root)
+    lock = _acquire_lock(root)
+    try:
+        disk_revision = 0
+        if path.exists():
+            try:
+                current = json.loads(path.read_text(encoding="utf-8"))
+                disk_revision = int(current.get("revision", 0))
+            except (json.JSONDecodeError, ValueError, TypeError) as exc:
+                raise OSError(f"cannot safely update corrupted state: {path}") from exc
+        expected = int(state.get("revision", 0))
+        if expected != disk_revision:
+            raise OSError(f"state revision conflict: expected {expected}, current {disk_revision}")
+        state["revision"] = disk_revision + 1
+        state["updated_at"] = now_iso()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + f".tmp-{os.getpid()}-{uuid.uuid4().hex}")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        return path
+    finally:
+        lock.unlink(missing_ok=True)
 
 
 def ensure_topic(state: dict[str, Any], topic: str) -> dict[str, Any]:
@@ -83,7 +121,7 @@ def set_stage(
     stage: str,
     status: str,
     *,
-    fingerprint: str = "",
+    fingerprint: str | None = None,
     reason: str = "",
     outputs: list[str] | None = None,
 ) -> None:
@@ -94,7 +132,8 @@ def set_stage(
     record = ensure_topic(state, topic)
     current = record["stages"][stage]
     old_fingerprint = current.get("fingerprint", "")
-    if fingerprint and old_fingerprint and fingerprint != old_fingerprint:
+    new_fingerprint = old_fingerprint if fingerprint is None else fingerprint
+    if new_fingerprint and old_fingerprint and new_fingerprint != old_fingerprint:
         approval = record.setdefault("approved", {}).get(stage)
         if isinstance(approval, dict):
             approval["approved"] = False
@@ -102,12 +141,12 @@ def set_stage(
             approval["updated_at"] = now_iso()
     current.update({
         "status": status,
-        "fingerprint": fingerprint,
+        "fingerprint": new_fingerprint,
         "reason": reason,
         "outputs": outputs or current.get("outputs", []),
         "updated_at": now_iso(),
     })
-    if fingerprint and old_fingerprint and fingerprint != old_fingerprint:
+    if new_fingerprint and old_fingerprint and new_fingerprint != old_fingerprint:
         mark_dependents_stale(state, topic, stage, reason=f"upstream {stage} changed")
 
 
@@ -126,7 +165,7 @@ def mark_dependents_stale(state: dict[str, Any], topic: str, changed_stage: str,
     stale.discard(changed_stage)
     for stage in stale:
         item = record["stages"][stage]
-        if item.get("status") == "ready":
+        if item.get("status") != "pending":
             item["status"] = "stale"
             item["reason"] = reason
             item["updated_at"] = now_iso()

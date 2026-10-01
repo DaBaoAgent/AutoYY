@@ -38,3 +38,6 @@ exclude = ["vendor"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
+
+[tool.coverage.run]
+omit = ["*/autoyy/transcribe.py"]

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from autoyy.attestation import ATTESTATION_ENV, attest_quality_record
 from autoyy.voiceover import (
     CANDIDATE_NAME,
     FINAL_NAME,
@@ -16,6 +17,22 @@ from autoyy.voiceover import (
     validate_voiceover,
     validate_voiceover_batch,
 )
+
+TEST_ATTESTATION_KEY = "autoyy-test-verifier-key"
+
+
+@pytest.fixture(autouse=True)
+def _quality_attestation_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(ATTESTATION_ENV, TEST_ATTESTATION_KEY)
+
+
+def save_quality(topic: Path, record: dict) -> None:
+    record.setdefault("writer", {}).setdefault("run_id", f"writer-{topic.name}")
+    record.setdefault("reviewer", {}).setdefault("run_id", f"reviewer-{topic.name}")
+    if not record["reviewer"].get("run_id"):
+        record["reviewer"]["run_id"] = f"reviewer-{topic.name}"
+    attest_quality_record(record, key=TEST_ATTESTATION_KEY, issuer="pytest-verifier", run_id=f"verifier-{topic.name}")
+    quality_path(topic).write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def make_topic(root: Path, name: str, target_chars: int = 4500, fill: str = "甲", extra: str = "") -> Path:
@@ -49,12 +66,12 @@ def make_topic(root: Path, name: str, target_chars: int = 4500, fill: str = "甲
     record["srt_full_read"] = True
     record["humanizer"] = {"pass": True, "mode": "embedded", "script_sha256": script_hash}
     record["fact_check"] = {"pass": True, "source_sha256": source_hash, "script_sha256": script_hash, "unsupported_claims": [], "checked_claims": 5}
-    record["reviewer"] = {"pass": True, "independent": True, "source_sha256": source_hash, "script_sha256": script_hash, "reason_codes": [], "checked_evidence": 5}
+    record["reviewer"] = {"pass": True, "independent": True, "run_id": f"reviewer-{name}", "source_sha256": source_hash, "script_sha256": script_hash, "reason_codes": [], "checked_evidence": 5}
     record["evidence"] = [
         {"kind": "quote", "source_kind": "srt", "source_text": text, "script_excerpt": quote, "value": quote}
         for text, quote in zip(cue_texts, quotes, strict=True)
     ]
-    quality_path(topic).write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_quality(topic, record)
     return topic
 
 
@@ -77,7 +94,7 @@ def test_stale_humanizer_hash_fails(tmp_path: Path) -> None:
     topic = make_topic(tmp_path, "01-test", 4500, "丁")
     record = json.loads(quality_path(topic).read_text(encoding="utf-8"))
     record["humanizer"]["script_sha256"] = "stale"
-    quality_path(topic).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    save_quality(topic, record)
     result = validate_voiceover(topic)
     assert not result["valid"]
     assert any("humanizer script hash stale" in issue for issue in result["issues"])
@@ -109,7 +126,7 @@ def test_reviewer_failure_blocks_promotion(tmp_path: Path) -> None:
     final.replace(candidate)
     record = json.loads(quality_path(topic).read_text(encoding="utf-8"))
     record["reviewer"]["pass"] = False
-    quality_path(topic).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    save_quality(topic, record)
     result = promote_candidate(topic)
     assert not result["promoted"]
     assert not final.exists()
@@ -131,7 +148,7 @@ def test_evidence_anchors_must_cover_script(tmp_path: Path) -> None:
     record = json.loads(quality_path(topic).read_text(encoding="utf-8"))
     first = record["evidence"][0]
     record["evidence"] = [first] * 5
-    quality_path(topic).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    save_quality(topic, record)
     result = validate_voiceover(topic)
     assert not result["valid"]
     assert any("evidence anchor max gap" in issue for issue in result["issues"])
@@ -142,7 +159,7 @@ def test_quality_metadata_requires_embedded_humanizer_and_independent_reviewer(t
     record = json.loads(quality_path(topic).read_text(encoding="utf-8"))
     record["humanizer"]["mode"] = "other"
     record["reviewer"]["independent"] = False
-    quality_path(topic).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    save_quality(topic, record)
     result = validate_voiceover(topic)
     assert not result["valid"]
     assert any("humanizer mode" in issue for issue in result["issues"])
@@ -164,7 +181,7 @@ def test_verified_external_evidence_can_support_numeric_claim(tmp_path: Path) ->
     })
     record["fact_check"]["checked_claims"] = len(record["evidence"])
     record["reviewer"]["checked_evidence"] = len(record["evidence"])
-    quality_path(topic).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    save_quality(topic, record)
     assert validate_voiceover(topic)["valid"]
 
 
@@ -172,7 +189,7 @@ def test_attempt_above_three_is_hard_failure(tmp_path: Path) -> None:
     topic = make_topic(tmp_path, "01-attempt", 4500, "癸")
     record = json.loads(quality_path(topic).read_text(encoding="utf-8"))
     record["attempt"] = 4
-    quality_path(topic).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    save_quality(topic, record)
     result = validate_voiceover(topic)
     assert not result["valid"]
     assert any("attempt must be" in issue for issue in result["issues"])
@@ -191,14 +208,14 @@ def test_laorou_profile_requires_exact_signature(tmp_path: Path) -> None:
     record["humanizer"]["script_sha256"] = script_hash
     record["fact_check"]["script_sha256"] = script_hash
     record["reviewer"]["script_sha256"] = script_hash
-    quality_path(topic).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    save_quality(topic, record)
     assert validate_voiceover(topic)["valid"]
     final.write_text(final.read_text(encoding="utf-8").replace(signature, "（我是艾伦，今天先到这里）"), encoding="utf-8")
     record["script_sha256"] = sha256_file(final)
     record["humanizer"]["script_sha256"] = record["script_sha256"]
     record["fact_check"]["script_sha256"] = record["script_sha256"]
     record["reviewer"]["script_sha256"] = record["script_sha256"]
-    quality_path(topic).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    save_quality(topic, record)
     assert not validate_voiceover(topic)["valid"]
 
 
@@ -206,7 +223,7 @@ def test_third_failed_attempt_marks_blocked_quality(tmp_path: Path) -> None:
     topic = make_topic(tmp_path, "01-blocked", 4499, "丑")
     record = json.loads(quality_path(topic).read_text(encoding="utf-8"))
     record["attempt"] = 3
-    quality_path(topic).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    save_quality(topic, record)
     result = validate_voiceover_batch(tmp_path)
     assert not result["valid"]
     row = result["results"][0]
@@ -239,7 +256,7 @@ def test_direct_quote_not_in_srt_is_hard_failure(tmp_path: Path) -> None:
     record["humanizer"]["script_sha256"] = new_hash
     record["fact_check"]["script_sha256"] = new_hash
     record["reviewer"]["script_sha256"] = new_hash
-    quality_path(topic).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    save_quality(topic, record)
     result = validate_voiceover(topic)
     assert not result["valid"]
     assert any("direct quotes not found" in issue for issue in result["issues"])
@@ -250,3 +267,26 @@ def test_default_profile_rejects_first_person_narrator(tmp_path: Path) -> None:
     result = validate_voiceover(topic)
     assert not result["valid"]
     assert any("first-person narrator" in issue for issue in result["issues"])
+
+
+def test_unsigned_self_attested_quality_record_cannot_bypass_gate(tmp_path: Path) -> None:
+    topic = make_topic(tmp_path, "01-unsigned", 4500, "辰")
+    record = json.loads(quality_path(topic).read_text(encoding="utf-8"))
+    record.pop("attestation", None)
+    record["humanizer"]["pass"] = True
+    record["fact_check"]["pass"] = True
+    record["reviewer"]["pass"] = True
+    quality_path(topic).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    result = validate_voiceover(topic)
+    assert not result["valid"]
+    assert any("attestation missing" in issue for issue in result["issues"])
+
+
+def test_tampering_after_attestation_invalidates_quality_gate(tmp_path: Path) -> None:
+    topic = make_topic(tmp_path, "01-tamper", 4500, "巳")
+    record = json.loads(quality_path(topic).read_text(encoding="utf-8"))
+    record["reviewer"]["checked_evidence"] += 1
+    quality_path(topic).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    result = validate_voiceover(topic)
+    assert not result["valid"]
+    assert any("signature invalid" in issue for issue in result["issues"])

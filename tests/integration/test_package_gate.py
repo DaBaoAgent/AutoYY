@@ -4,6 +4,7 @@ import json
 import struct
 from pathlib import Path
 
+from autoyy.attestation import ATTESTATION_ENV, attest_quality_record
 from autoyy.deliverables import validate_root
 from autoyy.voiceover import FINAL_NAME, create_quality_template, quality_path, sha256_file
 
@@ -43,13 +44,14 @@ def make_complete_topic(root: Path) -> Path:
         "unsupported_claims": [], "checked_claims": 5,
     }
     record["reviewer"] = {
-        "pass": True, "independent": True, "source_sha256": source_hash,
+        "pass": True, "independent": True, "run_id": "package-reviewer", "source_sha256": source_hash,
         "script_sha256": script_hash, "reason_codes": [], "checked_evidence": 5,
     }
     record["evidence"] = [
         {"kind": "quote", "source_kind": "srt", "source_text": f"人物说：{quote}", "script_excerpt": quote, "value": quote}
         for quote in quotes
     ]
+    attest_quality_record(record, key="package-test-key", issuer="pytest-verifier", run_id="package-verifier")
     quality_path(topic).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
     (topic / "发布信息.txt").write_text("完整测试标题\n#纪录片 #测试 #事实 #字幕 #质量", encoding="utf-8")
     make_png(topic / "封面-3比4.png", 1200, 1600)
@@ -58,6 +60,7 @@ def make_complete_topic(root: Path) -> Path:
 
 
 def test_full_package_gate_passes_complete_topic(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(ATTESTATION_ENV, "package-test-key")
     make_complete_topic(tmp_path)
     monkeypatch.setattr("autoyy.deliverables.probe_media", lambda *_a, **_k: {"duration": 10.0})
     result = validate_root(tmp_path, ffprobe="fake")
@@ -66,6 +69,7 @@ def test_full_package_gate_passes_complete_topic(tmp_path: Path, monkeypatch) ->
 
 
 def test_full_package_gate_rejects_bad_subtitle(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(ATTESTATION_ENV, "package-test-key")
     topic = make_complete_topic(tmp_path)
     subtitle = topic / "字幕.srt"
     subtitle.write_text(subtitle.read_text(encoding="utf-8").replace("\n2\n", "\n3\n", 1), encoding="utf-8")

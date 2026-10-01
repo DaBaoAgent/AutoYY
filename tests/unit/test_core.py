@@ -93,3 +93,29 @@ def test_running_state_recovers_to_failed(tmp_path: Path) -> None:
     loaded = load_state(tmp_path)
     assert recover_running(loaded) == 1
     assert loaded["topics"]["01-test"]["stages"]["subtitle"]["status"] == "failed"
+
+
+def test_state_revision_conflict_prevents_lost_update(tmp_path: Path) -> None:
+    from autoyy.state import empty_state, load_state, save_state
+
+    first = empty_state()
+    save_state(tmp_path, first)
+    left = load_state(tmp_path)
+    right = load_state(tmp_path)
+    left["topics"]["left"] = {"stages": {}, "approved": {}}
+    save_state(tmp_path, left)
+    right["topics"]["right"] = {"stages": {}, "approved": {}}
+    with pytest.raises(OSError, match="revision conflict"):
+        save_state(tmp_path, right)
+
+
+def test_file_fingerprint_tracks_content_not_only_metadata(tmp_path: Path) -> None:
+    from autoyy.state import file_fingerprint
+
+    path = tmp_path / "same-size.txt"
+    path.write_text("abc", encoding="utf-8")
+    before = file_fingerprint(path)
+    path.write_text("xyz", encoding="utf-8")
+    after = file_fingerprint(path)
+    assert before.startswith("sha256:")
+    assert before != after

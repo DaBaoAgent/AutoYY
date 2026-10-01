@@ -69,9 +69,18 @@ def _optional_args(options: DownloadOptions) -> list[str]:
     return args
 
 
+def _redact_command(command: list[str]) -> list[str]:
+    redacted = list(command)
+    sensitive = {"--proxy", "--cookies", "--cookies-from-browser"}
+    for index, token in enumerate(redacted[:-1]):
+        if token in sensitive:
+            redacted[index + 1] = "<redacted>"
+    return redacted
+
+
 def _run(command: list[str], options: DownloadOptions) -> subprocess.CompletedProcess[str]:
     if options.trace:
-        print("TRACE>", subprocess.list2cmdline(command))
+        print("TRACE>", subprocess.list2cmdline(_redact_command(command)))
     try:
         return subprocess.run(command, capture_output=True, text=True, timeout=options.command_timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -120,9 +129,38 @@ def _verified_ready(topic_dir: Path, ffprobe: str | None) -> bool:
     return True
 
 
-def _download_video(row: ManifestRow, topic_dir: Path, options: DownloadOptions, yt_dlp: str) -> None:
-    if find_primary_video(topic_dir) is not None:
-        return
+def _quarantine(path: Path) -> Path:
+    target = path.with_name(path.name + ".invalid")
+    counter = 1
+    while target.exists():
+        target = path.with_name(path.name + f".invalid-{counter}")
+        counter += 1
+    path.replace(target)
+    return target
+
+
+def _video_valid(topic_dir: Path, ffprobe: str | None) -> bool:
+    video = find_primary_video(topic_dir)
+    if video is None or not ffprobe:
+        return False
+    try:
+        probe_media(video, ffprobe, timeout=60)
+    except RuntimeError:
+        return False
+    return True
+
+
+def _subtitle_valid(topic_dir: Path) -> bool:
+    subtitle = find_primary_subtitle(topic_dir)
+    return subtitle is not None and validate_srt(subtitle)["valid"]
+
+
+def _download_video(row: ManifestRow, topic_dir: Path, options: DownloadOptions, yt_dlp: str, ffprobe: str | None = None) -> None:
+    existing = find_primary_video(topic_dir)
+    if existing is not None:
+        if _video_valid(topic_dir, ffprobe):
+            return
+        _quarantine(existing)
     command = [
         *_command_prefix(yt_dlp), "--continue", "--no-overwrites", "--no-playlist", "--retries", "10", "--fragment-retries", "10",
         "--concurrent-fragments", "8", "--embed-metadata", "--merge-output-format", "mp4", "--remux-video", "mp4",
@@ -143,7 +181,9 @@ def _download_video(row: ManifestRow, topic_dir: Path, options: DownloadOptions,
 def _download_subtitle(row: ManifestRow, topic_dir: Path, options: DownloadOptions, yt_dlp: str) -> str:
     existing = find_primary_subtitle(topic_dir)
     if existing is not None:
-        return (row.data.get("subtitle_language") or "").strip()
+        if _subtitle_valid(topic_dir):
+            return (row.data.get("subtitle_language") or "").strip()
+        _quarantine(existing)
     language = _select_subtitle_language(row, options, yt_dlp)
     if not language:
         raise RuntimeError("no usable subtitle track found")
@@ -177,14 +217,14 @@ def process_row(row: ManifestRow, options: DownloadOptions, yt_dlp: str, ffprobe
     if _verified_ready(topic_dir, ffprobe):
         return {"folder_name": row.folder_name, "url": row.url, "video": True, "subtitle": True, "subtitle_language": row.data.get("subtitle_language", ""), "attempts": 0, "status": "ready(skip)"}
     try:
-        _download_video(row, topic_dir, options, yt_dlp)
+        _download_video(row, topic_dir, options, yt_dlp, ffprobe)
         language = _download_subtitle(row, topic_dir, options, yt_dlp)
         ready = _verified_ready(topic_dir, ffprobe)
         return {
             "folder_name": row.folder_name,
             "url": row.url,
-            "video": find_primary_video(topic_dir) is not None,
-            "subtitle": find_primary_subtitle(topic_dir) is not None,
+            "video": _video_valid(topic_dir, ffprobe),
+            "subtitle": _subtitle_valid(topic_dir),
             "subtitle_language": language,
             "attempts": 1,
             "status": "complete" if ready else "incomplete",
@@ -194,8 +234,8 @@ def process_row(row: ManifestRow, options: DownloadOptions, yt_dlp: str, ffprobe
         return {
             "folder_name": row.folder_name,
             "url": row.url,
-            "video": find_primary_video(topic_dir) is not None,
-            "subtitle": find_primary_subtitle(topic_dir) is not None,
+            "video": _video_valid(topic_dir, ffprobe),
+            "subtitle": _subtitle_valid(topic_dir),
             "subtitle_language": (row.data.get("subtitle_language") or "").strip(),
             "attempts": 1,
             "status": "failed",
@@ -271,8 +311,10 @@ def run_download(options: DownloadOptions) -> tuple[int, dict[str, object]]:
         topic_dir = safe_child_path(options.output_root, str(item.get("folder_name", "")))
         video = find_primary_video(topic_dir) if topic_dir.is_dir() else None
         subtitle = find_primary_subtitle(topic_dir) if topic_dir.is_dir() else None
-        set_stage(state, topic_dir.name, "source", "ready" if video else "failed", fingerprint=file_fingerprint(video) if video else "missing", reason="" if video else str(item.get("error", "source missing")))
-        set_stage(state, topic_dir.name, "subtitle", "ready" if subtitle else "failed", fingerprint=file_fingerprint(subtitle) if subtitle else "missing", reason="" if subtitle else str(item.get("error", "subtitle missing")))
+        video_ready = item.get("video") is True and item.get("status") in {"complete", "ready(skip)"}
+        subtitle_ready = item.get("subtitle") is True and item.get("status") in {"complete", "ready(skip)"}
+        set_stage(state, topic_dir.name, "source", "ready" if video_ready else "failed", fingerprint=file_fingerprint(video) if video_ready and video else "missing", reason="" if video_ready else str(item.get("error", "source verification failed")))
+        set_stage(state, topic_dir.name, "subtitle", "ready" if subtitle_ready else "failed", fingerprint=file_fingerprint(subtitle) if subtitle_ready and subtitle else "missing", reason="" if subtitle_ready else str(item.get("error", "subtitle verification failed")))
     save_state(options.output_root, state)
     summary = {
         "valid": failed == 0 and len(results) == len(rows),

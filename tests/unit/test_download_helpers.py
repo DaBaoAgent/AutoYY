@@ -83,3 +83,45 @@ def test_status_writer_is_atomic_csv(tmp_path: Path) -> None:
     text = path.read_text(encoding="utf-8-sig")
     assert "folder_name" in text and "01-a" in text
     assert not list(tmp_path.glob("*.tmp-*"))
+
+
+def test_corrupt_nonzero_artifacts_are_quarantined_and_replaced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    topic = tmp_path / "01-a"
+    topic.mkdir()
+    video = topic / "高清源视频.mp4"
+    video.write_bytes(b"corrupt-but-nonzero")
+    subtitle = topic / "字幕.srt"
+    subtitle.write_text("broken but nonzero", encoding="utf-8")
+    opts = options(tmp_path)
+
+    def fake_probe(path: Path, *_a, **_k):
+        if b"corrupt" in Path(path).read_bytes():
+            raise RuntimeError("bad media")
+        return {"duration": 1.0}
+
+    def fake_run(command, *_a, **_k):
+        if "--merge-output-format" in command:
+            video.write_bytes(b"fresh-video")
+        if "--write-subs" in command:
+            (topic / "字幕.en.srt").write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nok\n", encoding="utf-8"
+            )
+        return proc()
+
+    monkeypatch.setattr(dl, "probe_media", fake_probe)
+    monkeypatch.setattr(dl, "_run", fake_run)
+    monkeypatch.setattr(dl, "_select_subtitle_language", lambda *_a, **_k: "en")
+    dl._download_video(row(), topic, opts, "fake", "ffprobe")
+    dl._download_subtitle(row(), topic, opts, "fake")
+    assert video.read_bytes() == b"fresh-video"
+    assert dl.validate_srt(topic / "字幕.srt")["valid"]
+    assert list(topic.glob("高清源视频.mp4.invalid*"))
+    assert list(topic.glob("字幕.srt.invalid*"))
+
+
+def test_trace_redacts_proxy_and_cookie_values() -> None:
+    command = ["yt-dlp", "--proxy", "http://user:secret@example", "--cookies-from-browser", "chrome", "url"]
+    redacted = dl._redact_command(command)
+    assert "secret" not in " ".join(redacted)
+    assert "chrome" not in " ".join(redacted)
+    assert redacted.count("<redacted>") == 2
