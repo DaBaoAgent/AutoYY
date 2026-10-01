@@ -93,6 +93,14 @@ The writer creates `爆款口播稿.candidate.txt` and binds `voiceover scaffold
 
 After all topics, run `python -m autoyy voiceover validate <project-root> --workers 4`. Every topic must report complete. A partial batch returns exit code 1 and may only be described as incomplete/blocked.
 
+## Batch inventory, profiling, and scheduler
+
+Before multi-topic execution, inventory the project root. Only `NN-...` names are executable topics; topic-like legacy names such as `NN ...` must be reported explicitly and resolved rather than silently ignored. `autoyy profile` records discovery/state timings and summarizes local historical topic latency.
+
+Automatic claims use deterministic stage dependency gates, one active topic per worker, no duplicate topic lease, and stage capacity budgets. Default scheduling is `finish-first`; `repair-first` prioritizes failed/stale work and `source-first` prioritizes upstream feeding. A scheduler strategy changes ordering only, never acceptance thresholds.
+
+Download and ASR emit local-only JSONL run events under `.autoyy/events.jsonl`; include run ID, topic, stage, elapsed time, status, and stable error code. Diagnostics may use these records, but normal execution must remain correct if event logging fails.
+
 ## Project state
 
 Production projects use `.autoyy/state.json` with schema version 1. Stages are `source`, `subtitle`, `voiceover`, `publication`, `cover`, and `package`, with statuses `pending`, `running`, `ready`, `blocked`, `failed`, or `stale`. Ready stages may be explicitly approved; a fingerprint change revokes affected approvals.

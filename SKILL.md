@@ -28,6 +28,8 @@ Use `D:\自动剪辑` as the default working root. If the user does not provide 
 - Use Chrome control only when the user explicitly needs signed-in browser state. Use `--cookies-from-browser` only after explicit authorization.
 - Before writing or revising any voiceover, read `vendor/blader-humanizer/SKILL.md` completely and apply its Embedded mode. This humanization pass is mandatory, including single-topic drafts, batch generation, and rewrites.
 - Use the image-generation skill for all raster cover generation and edits. Load the relevant master cover from `assets/` as a style reference.
+- Use `python -m autoyy diagnose <project-root>` when a batch stalls or repeatedly retries; use the structured error code and recent event context instead of rerunning the whole project blindly.
+- Use `python -m autoyy schedule <project-root> --capabilities <csv> --strategy finish-first` for read-only agent planning, and `work claim --stage auto` to atomically claim the selected task.
 - Use `scripts/download_from_manifest.ps1` as the backward-compatible Windows entry. It delegates to the tested Python download core, validates resume artifacts before skipping them, supports optional aria2c acceleration, and supports `-Parallel N` without PowerShell runspace-specific logic.
 - If a topic folder has a video but no usable SRT, run `scripts/transcribe.py` as the local ASR fallback: it extracts audio with ffmpeg and writes `字幕.srt` (FunASR preferred for Chinese, faster-whisper already installed; resumes automatically by skipping folders that already have subtitles).
 - Use `scripts/validate_subtitles.py` to check SRT syntax, time-axis order, and subtitle-video alignment drift before writing the voiceover.
@@ -87,7 +89,7 @@ powershell -ExecutionPolicy Bypass -File scripts/download_from_manifest.ps1 `
 Optional P1 hardening flags (all backward compatible):
 
 - `-UseAria2 -Aria2Connections 8` — aria2c multi-connection per file (auto-detected; install with `winget install aria2.aria2`). Falls back to yt-dlp built-in concurrent fragments when aria2c is missing.
-- `-Parallel 4` processes up to N topics through AutoYY's Python worker pool. The PowerShell wrapper works on both Windows PowerShell 5.1 and PowerShell 7.
+- `-Parallel 4` / `autoyy download --workers 4` processes up to N topics through AutoYY's Python worker pool. The PowerShell wrapper works on both Windows PowerShell 5.1 and PowerShell 7.
 - `-Trace` — print every yt-dlp command for debugging.
 - Resume trusts validation, not status labels: any existing non-empty video/SRT pair is skipped only after SRT and ffprobe checks pass. `下载状态.csv` is a report, not a source of truth.
 
@@ -142,7 +144,7 @@ Do not pad to length. If the source cannot support the requested duration, state
 
 When a request contains two or more topic directories, quality outranks throughput:
 
-1. Build the queue with `python -m autoyy batch plan <project-root> voiceover`, then **claim exactly one topic** using `python -m autoyy work claim <project-root> --worker-id <unique-run-id> --stage voiceover`. The lease is mandatory for multi-topic `voiceover scaffold`; the same worker cannot claim a second directory until its active lease is released. Never manually enumerate several SRTs into one writing prompt.
+1. Build the queue with `python -m autoyy schedule <project-root> --capabilities voiceover --strategy finish-first` (or the stage-specific `batch plan`), then **claim exactly one topic** using `python -m autoyy work claim <project-root> --worker-id <unique-run-id> --stage voiceover`. The lease is mandatory for multi-topic `voiceover scaffold`; the same worker cannot claim a second directory until its active lease is released. Never manually enumerate several SRTs into one writing prompt.
 2. Read the current topic's complete `字幕.srt`; summaries may navigate the source but cannot replace the full read.
 3. Write `爆款口播稿.candidate.txt`. Then run `python -m autoyy voiceover scaffold <topic-folder> --lease-token <token>` so writer provenance is tied to the claimed topic. Do not write or overwrite `爆款口播稿.txt` directly.
 4. Run `vendor/blader-humanizer/SKILL.md` in Embedded mode on that candidate, then perform a source-grounded fact check and an independent semantic review in a fresh context.

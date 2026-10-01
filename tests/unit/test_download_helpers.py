@@ -176,3 +176,28 @@ def test_download_checkpoints_completed_rows_before_interrupt(
     assert (output / "下载状态.csv").is_file()
     state = json.loads((output / ".autoyy" / "state.json").read_text(encoding="utf-8"))
     assert state["topics"]["01-topic"]["stages"]["subtitle"]["status"] == "ready"
+
+
+def test_download_state_keeps_verified_source_ready_when_subtitle_fails(tmp_path: Path) -> None:
+    from autoyy.state import empty_state
+
+    output = tmp_path / "out"
+    topic = output / "01-a"
+    topic.mkdir(parents=True)
+    (topic / "高清源视频.mp4").write_bytes(b"valid-video-placeholder")
+    opts = dl.DownloadOptions(tmp_path / "manifest.csv", output)
+    state = empty_state()
+    dl._apply_result_state(
+        state,
+        opts,
+        {
+            "folder_name": "01-a",
+            "video": True,
+            "subtitle": False,
+            "status": "failed",
+            "error": "no usable subtitle track found",
+        },
+    )
+    stages = state["topics"]["01-a"]["stages"]
+    assert stages["source"]["status"] == "ready"
+    assert stages["subtitle"]["status"] == "failed"

@@ -11,11 +11,14 @@ from . import __version__
 from .batch import batch_status, stage_plan
 from .config import peer_library
 from .deliverables import validate_root
+from .diagnostics import diagnose
 from .doctor import run_doctor
 from .download import DownloadOptions, run_download
 from .io import configure_utf8_stdio
 from .peer import load_library, pattern_stats
+from .profiling import inventory_root, profile_workload
 from .publication import validate_publication_file
+from .scheduler import STRATEGIES, parse_capabilities, scheduler_plan
 from .state import (
     file_fingerprint,
     force_stage,
@@ -163,6 +166,7 @@ def cmd_download(args: argparse.Namespace) -> int:
         aria2_connections=args.aria2_connections,
         trace=args.trace,
         js_runtimes=args.js_runtimes,
+        overlap_assets=not args.no_overlap_assets,
     )
     code, result = run_download(options)
     emit(result, compact=args.json)
@@ -254,12 +258,59 @@ def cmd_batch_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_batch_inventory(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    try:
+        result = inventory_root(root)
+    except FileNotFoundError:
+        emit({"ok": False, "error_code": "ROOT_NOT_FOUND", "error": "root does not exist"}, compact=args.json)
+        return 2
+    result["ok"] = result["legacy_candidate_count"] == 0
+    emit(result, compact=args.json)
+    return 0 if result["ok"] else 1
+
+
+def cmd_profile(args: argparse.Namespace) -> int:
+    try:
+        result = profile_workload(Path(args.root).resolve())
+    except FileNotFoundError:
+        emit({"ok": False, "error_code": "ROOT_NOT_FOUND", "error": "root does not exist"}, compact=args.json)
+        return 2
+    emit(result, compact=args.json)
+    return 0
+
+
+def cmd_diagnose(args: argparse.Namespace) -> int:
+    try:
+        result = diagnose(Path(args.root).resolve(), event_limit=args.event_limit)
+    except FileNotFoundError:
+        emit({"ok": False, "error_code": "ROOT_NOT_FOUND", "error": "root does not exist"}, compact=args.json)
+        return 2
+    emit(result, compact=args.json)
+    return 0 if result["ok"] else 1
+
+
+def cmd_schedule_plan(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        emit({"ok": False, "error_code": "ROOT_NOT_FOUND", "error": "root does not exist"}, compact=args.json)
+        return 2
+    try:
+        result = scheduler_plan(root, capabilities=parse_capabilities(args.capabilities), active_leases=work_status(root)["leases"], strategy=args.strategy)
+    except ValueError as exc:
+        emit({"ok": False, "error_code": "INVALID_CAPABILITIES", "error": str(exc)}, compact=args.json)
+        return 2
+    emit(result, compact=args.json)
+    return 0
+
 def cmd_work_claim(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
     try:
         result = claim_work(
             root, worker_id=args.worker_id, stage=args.stage,
             lease_seconds=args.lease_seconds, topic=args.topic,
+            capabilities=parse_capabilities(args.capabilities) if args.stage == "auto" else None,
+            strategy=args.strategy,
         )
     except (OSError, ValueError, RuntimeError) as exc:
         emit({"ok": False, "error": str(exc)}, compact=args.json)
@@ -305,6 +356,7 @@ def cmd_transcribe(args: argparse.Namespace) -> int:
         "--backend", args.backend, "--language", args.language,
         "--model-size", args.model_size, "--device", args.device,
         "--beam-size", str(args.beam_size), "--ffmpeg-timeout", str(args.ffmpeg_timeout),
+        "--workers", str(args.workers),
     ]
     if args.ffmpeg_location:
         command += ["--ffmpeg-location", args.ffmpeg_location]
@@ -329,13 +381,28 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--repo-root")
     doctor.set_defaults(func=cmd_doctor)
 
+    profile = sub.add_parser("profile")
+    profile.add_argument("root")
+    profile.set_defaults(func=cmd_profile)
+
+    diagnose_parser = sub.add_parser("diagnose")
+    diagnose_parser.add_argument("root")
+    diagnose_parser.add_argument("--event-limit", type=int, default=50)
+    diagnose_parser.set_defaults(func=cmd_diagnose)
+
+    schedule = sub.add_parser("schedule")
+    schedule.add_argument("root")
+    schedule.add_argument("--capabilities", default="source,subtitle,voiceover,publication,cover,package")
+    schedule.add_argument("--strategy", choices=sorted(STRATEGIES), default="finish-first")
+    schedule.set_defaults(func=cmd_schedule_plan)
+
     validate = sub.add_parser("validate")
     validate.add_argument("root")
     validate.add_argument("--allow-empty", action="store_true")
     validate.add_argument("--expected-count", type=int)
     validate.add_argument("--skip-quality-record", action="store_true")
     validate.add_argument("--ffprobe")
-    validate.add_argument("--workers", type=int, choices=range(1, 17), default=1)
+    validate.add_argument("--workers", type=int, choices=range(1, 17), default=4)
     validate.set_defaults(func=cmd_validate)
 
     publication = sub.add_parser("publication")
@@ -377,10 +444,11 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("--min-height", type=int, default=720)
     download.add_argument("--max-height", type=int, default=1080)
     download.add_argument("--plan-only", action="store_true")
-    download.add_argument("--parallel", type=int, default=1)
+    download.add_argument("--parallel", "--workers", dest="parallel", type=int, default=1)
     download.add_argument("--use-aria2", action="store_true")
     download.add_argument("--aria2-connections", type=int, default=8)
     download.add_argument("--trace", action="store_true")
+    download.add_argument("--no-overlap-assets", action="store_true")
     download.add_argument("--js-runtimes")
     download.set_defaults(func=cmd_download)
 
@@ -424,13 +492,18 @@ def build_parser() -> argparse.ArgumentParser:
     batch_plan_parser.add_argument("root")
     batch_plan_parser.add_argument("stage", choices=["source", "subtitle", "voiceover", "publication", "cover", "package"])
     batch_plan_parser.set_defaults(func=cmd_batch_plan)
+    batch_inventory_parser = batch_sub.add_parser("inventory")
+    batch_inventory_parser.add_argument("root")
+    batch_inventory_parser.set_defaults(func=cmd_batch_inventory)
 
     work = sub.add_parser("work")
     work_sub = work.add_subparsers(dest="work_command", required=True)
     work_claim = work_sub.add_parser("claim")
     work_claim.add_argument("root")
     work_claim.add_argument("--worker-id", required=True)
-    work_claim.add_argument("--stage", choices=["source", "subtitle", "voiceover", "publication", "cover", "package"], default="voiceover")
+    work_claim.add_argument("--stage", choices=["auto", "source", "subtitle", "voiceover", "publication", "cover", "package"], default="voiceover")
+    work_claim.add_argument("--capabilities", default="source,subtitle,voiceover,publication,cover,package")
+    work_claim.add_argument("--strategy", choices=sorted(STRATEGIES), default="finish-first")
     work_claim.add_argument("--topic")
     work_claim.add_argument("--lease-seconds", type=int, default=1800)
     work_claim.set_defaults(func=cmd_work_claim)
@@ -461,6 +534,7 @@ def build_parser() -> argparse.ArgumentParser:
     transcribe.add_argument("--no-vad", action="store_true")
     transcribe.add_argument("--overwrite", action="store_true")
     transcribe.add_argument("--dry-run", action="store_true")
+    transcribe.add_argument("--workers", type=int, choices=range(1, 5), default=1)
     transcribe.set_defaults(func=cmd_transcribe)
     return parser
 

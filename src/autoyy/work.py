@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from .batch import stage_plan
+from .observability import record_event
+from .scheduler import DEFAULT_STAGE_LIMITS, scheduler_plan
 from .state import STAGES
 
 LEASE_SCHEMA = 1
@@ -39,6 +41,37 @@ def _lease_dir(root: Path) -> Path:
 def _worker_lock_path(root: Path, worker_id: str) -> Path:
     digest = hashlib.sha256(worker_id.encode("utf-8")).hexdigest()[:24]
     return _lease_dir(root) / f".worker-{digest}.lock"
+
+
+def _claim_lock_path(root: Path) -> Path:
+    return _lease_dir(root) / ".claim.lock"
+
+
+@contextmanager
+def _claim_lock(root: Path) -> Iterator[None]:
+    directory = _lease_dir(root)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = _claim_lock_path(root)
+    deadline = time.monotonic() + 10.0
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - path.stat().st_mtime > 30:
+                    path.unlink(missing_ok=True)
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                raise RuntimeError("claim lock timeout") from None
+            time.sleep(0.02)
+    try:
+        yield
+    finally:
+        path.unlink(missing_ok=True)
 
 
 @contextmanager
@@ -126,8 +159,10 @@ def claim_work(
     stage: str = "voiceover",
     lease_seconds: int = 1800,
     topic: str | None = None,
+    capabilities: list[str] | None = None,
+    strategy: str = "finish-first",
 ) -> dict[str, Any]:
-    if stage not in STAGES:
+    if stage not in {*STAGES, "auto"}:
         raise ValueError(f"unknown stage: {stage}")
     worker_id = worker_id.strip()
     if not worker_id:
@@ -135,25 +170,34 @@ def claim_work(
     if not MIN_LEASE_SECONDS <= lease_seconds <= MAX_LEASE_SECONDS:
         raise ValueError(f"lease_seconds must be {MIN_LEASE_SECONDS}-{MAX_LEASE_SECONDS}")
     root = root.resolve()
-    with _worker_lock(root, worker_id):
+    with _claim_lock(root), _worker_lock(root, worker_id):
         cleanup_expired_leases(root)
         existing = _existing_worker_lease(root, worker_id)
         if existing:
-            if existing.get("stage") != stage or (topic is not None and existing.get("topic") != topic):
+            if (stage != "auto" and existing.get("stage") != stage) or (topic is not None and existing.get("topic") != topic):
                 raise RuntimeError(
                     f"worker already holds {existing.get('stage')} lease for {existing.get('topic')}; "
                     "release it before claiming different work"
                 )
             return {"ok": True, "reused": True, "lease": existing}
-        plan = stage_plan(root, stage)
-        candidates = [row for row in plan["results"] if row["runnable"]]
+        active_leases = list_leases(root)
+        if stage == "auto":
+            schedule = scheduler_plan(root, capabilities=capabilities, active_leases=active_leases, strategy=strategy)
+            candidates = schedule["candidates"]
+        else:
+            active_stage_count = sum(item.get("stage") == stage for item in active_leases)
+            if active_stage_count >= DEFAULT_STAGE_LIMITS[stage]:
+                return {"ok": False, "reason": "stage_capacity_reached", "stage": stage, "stage_limit": DEFAULT_STAGE_LIMITS[stage]}
+            plan = stage_plan(root, stage)
+            candidates = [{**row, "stage": stage} for row in plan["results"] if row["runnable"]]
+            active_topics = {str(item.get("topic")) for item in active_leases}
+            candidates = [row for row in candidates if row["topic"] not in active_topics]
         if topic is not None:
             candidates = [row for row in candidates if row["topic"] == topic]
             if not candidates:
                 raise RuntimeError(f"topic is not runnable for {stage}: {topic}")
-        active_topics = {str(item.get("topic")) for item in list_leases(root)}
-        candidates = [row for row in candidates if row["topic"] not in active_topics]
         for row in candidates:
+            selected_stage = str(row.get("stage") or stage)
             token = uuid.uuid4().hex
             now = time.time()
             lease = {
@@ -161,16 +205,16 @@ def claim_work(
                 "token": token,
                 "worker_id": worker_id,
                 "topic": row["topic"],
-                "stage": stage,
+                "stage": selected_stage,
                 "created_at": _now_iso(),
                 "expires_at_epoch": now + lease_seconds,
                 "lease_seconds": lease_seconds,
                 "one_topic_only": True,
                 "topic_path": str(root / row["topic"]),
-                "required_inputs": STAGE_IO[stage]["inputs"],
-                "allowed_outputs": STAGE_IO[stage]["outputs"],
+                "required_inputs": STAGE_IO[selected_stage]["inputs"],
+                "allowed_outputs": STAGE_IO[selected_stage]["outputs"],
             }
-            path = _lease_path(root, row["topic"], stage)
+            path = _lease_path(root, row["topic"], selected_stage)
             path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -178,8 +222,9 @@ def claim_work(
                 continue
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(lease, handle, ensure_ascii=False, indent=2)
+            record_event(root, "lease_claim", command="work claim", topic=row["topic"], stage=selected_stage, status="ready", details={"worker_id": worker_id, "lease_seconds": lease_seconds})
             return {"ok": True, "reused": False, "lease": lease}
-        return {"ok": False, "reason": "no_runnable_unleased_topic", "stage": stage}
+        return {"ok": False, "reason": "no_runnable_unleased_topic", "stage": stage, "capabilities": capabilities or []}
 
 
 def heartbeat_work(root: Path, token: str, *, lease_seconds: int = 1800) -> dict[str, Any]:
@@ -193,6 +238,7 @@ def heartbeat_work(root: Path, token: str, *, lease_seconds: int = 1800) -> dict
             temp = path.with_suffix(f".tmp-{uuid.uuid4().hex}")
             temp.write_text(json.dumps(lease, ensure_ascii=False, indent=2), encoding="utf-8")
             os.replace(temp, path)
+            record_event(root, "lease_heartbeat", command="work heartbeat", topic=str(lease.get("topic", "")), stage=str(lease.get("stage", "")), status="ready", details={"worker_id": lease.get("worker_id", "")})
             return {"ok": True, "lease": lease}
     return {"ok": False, "reason": "lease_not_found_or_expired"}
 
@@ -205,6 +251,7 @@ def release_work(root: Path, token: str) -> dict[str, Any]:
         lease = _read_lease(path)
         if lease and lease.get("token") == token:
             path.unlink(missing_ok=True)
+            record_event(root, "lease_release", command="work release", topic=str(lease.get("topic", "")), stage=str(lease.get("stage", "")), status="ready", details={"worker_id": lease.get("worker_id", "")})
             return {"ok": True, "released": lease}
     return {"ok": False, "reason": "lease_not_found"}
 

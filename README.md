@@ -36,10 +36,14 @@ For Codex Skill installation, clone or junction the repository into the Codex sk
 
 ```powershell
 python -m autoyy doctor
+python -m autoyy profile <project-root>
+python -m autoyy diagnose <project-root>
+python -m autoyy schedule <project-root> --capabilities source,subtitle,voiceover --strategy finish-first
 python -m autoyy validate <project-root> --workers 4
+python -m autoyy batch inventory <project-root>
 python -m autoyy batch status <project-root>
 python -m autoyy batch plan <project-root> voiceover
-python -m autoyy work claim <project-root> --worker-id <run-id> --stage voiceover
+python -m autoyy work claim <project-root> --worker-id <run-id> --stage auto --capabilities voiceover,publication --strategy finish-first
 python -m autoyy publication validate <project-root>
 python -m autoyy voiceover scaffold <topic-folder> --lease-token <token>
 python -m autoyy voiceover validate <project-root> --workers 4
@@ -49,6 +53,10 @@ python -m autoyy state show <project-root>
 python -m autoyy state approve <project-root> <topic> voiceover --reason "reviewed"
 python -m autoyy state force <project-root> <topic> <stage> --reason "rerun requested"
 ```
+
+`autoyy profile` reports real inventory size, discovery/state timing, ignored legacy topic candidates, and historical per-topic latency from local run events. `autoyy diagnose` summarizes recent structured error codes, active leases, failed/blocked stages, and actionable hints. `autoyy schedule` is read-only; `work claim --stage auto` applies the same scheduler and creates the atomic lease.
+
+Scheduler strategies are `finish-first` (default: finish partially completed topics), `repair-first` (prioritize stale/failed work), and `source-first` (feed upstream stages). Stage concurrency budgets prevent an agent swarm from overloading download/ASR/cover resources.
 
 `--json` may be placed before or after the subcommand for agent-friendly compact output. The compatibility scripts under `scripts/` remain available for existing automation. Exit-code contract is `0=success`, `1=work completed with failed/incomplete items`, and `2=invalid input, missing required dependency, or unusable state/schema`.
 
@@ -78,6 +86,14 @@ Cross-topic hard failures include a shared contiguous block of 80+ characters, m
 Each production project may contain `.autoyy/state.json`. It records stage status and non-secret fingerprints for source, subtitle, voiceover, publication, cover, and package validation. Changing an upstream fingerprint marks dependent ready stages stale. A corrupted state file is reported rather than silently replaced. Ready stages can be explicitly approved; forcing or changing an upstream fingerprint revokes affected approvals and marks dependents stale.
 
 The user evidence library also defaults to the project `.autoyy/peer-hit-library.csv`; the tracked asset is only a seed/template. Normal use therefore does not dirty the skill repository.
+
+## Performance and observability
+
+Long-running download/ASR work appends local structured events to `<project>/.autoyy/events.jsonl`. The log is local-only, rotates at 10 MiB, includes run IDs, topic/stage status, elapsed time, and stable error codes, and is consumed by `profile`/`diagnose`. It is not remote telemetry.
+
+Large media files use a sampled state fingerprint (size plus beginning/middle/end SHA-256 samples) after ffprobe verification instead of rereading multi-gigabyte media end to end. Text and small files still use full SHA-256. Download overlaps subtitle discovery with video transfer by default; use `--no-overlap-assets` only for troubleshooting. `download --workers N` is an alias for the compatibility `--parallel N`.
+
+Faster-whisper reads media directly and does not require an intermediate WAV. FunASR still uses ffmpeg audio extraction. `transcribe --workers 1..4` enables independent backend model instances; the default remains 1 to avoid accidental RAM/VRAM exhaustion. Final package validation defaults to four workers based on the real workload benchmark in `docs/performance-baseline.md`.
 
 ## Cover workflows
 

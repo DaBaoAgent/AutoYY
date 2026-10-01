@@ -50,4 +50,7 @@ jobs:
           python -m venv .wheel-venv
           .\.wheel-venv\Scripts\python.exe -m pip install $wheel
           .\.wheel-venv\Scripts\autoyy.exe --version
+          .\.wheel-venv\Scripts\autoyy.exe profile --help
+          .\.wheel-venv\Scripts\autoyy.exe diagnose --help
+          .\.wheel-venv\Scripts\autoyy.exe schedule --help
           .\.wheel-venv\Scripts\autoyy.exe transcribe --help

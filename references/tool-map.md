@@ -19,7 +19,7 @@
 
 | Stage | Main action | Tools | Supporting skills | Output or gate |
 |---|---|---|---|---|
-| 0. Scope and inventory | Resolve roots, requested stages, counts, formats, permissions, and existing files | PowerShell, `rg`, task plan | AutoYY | Confirmed scope with no accidental overwrite |
+| 0. Scope and inventory | Resolve roots, requested stages, counts, formats, permissions, existing files, and legacy topic-name candidates | `autoyy profile`, `autoyy batch inventory`, PowerShell, `rg` | AutoYY | Confirmed scope with no silently ignored topic-like directories |
 | 1. Performance audit | Read every platform screenshot, transcribe visible metrics, deduplicate overlap, normalize topics | Image viewer, visual OCR, filesystem search; spreadsheet tooling for tables | Spreadsheets when aggregation is substantial | Audited raw records and platform/topic summary |
 | 2. Topic planning | Extract winning audience promises; allocate 70% proven, 20% adjacent, 10% experiments; score candidates | Structured analysis, spreadsheet formulas or scripts | AutoYY, Spreadsheets when useful | Topics scoring 20/25 or a documented exception |
 | 3. Source research | Find direct YouTube videos, verify duration, views, resolution, subtitles, match, channel, date, and rights note | Web search/open, browser inspection, metadata-only `yt-dlp` checks | In-app Browser; Chrome only for explicitly authorized signed-in state | Verified 30+ minute source rows |
@@ -30,7 +30,7 @@
 | 7. Publication information | Consult the peer hit library, then write or recursively refresh a factual Douyin-style title and five tags; feed post-publish results back | File editing, PowerShell for safe bulk rewrites, `scripts/peer_hit_library.py`, `scripts/validate_publication_info.py`, `rg` for legacy fields | AutoYY | Exactly two lines; title ≤25 characters; exactly five hashtags; library updated with new evidence |
 | 8. Cover production | Create matching 3:4 and 4:3 topic covers or 1:1 and 4:3 collection covers | Image generation, image viewer, dimension inspection, approved assets | Imagegen | Exact Chinese text, approved typography, correct ratios |
 | 9. Package validation | Check media, subtitles, scripts, publication files, covers, ratios, duplicates, zero-byte files, and subtitle alignment | `scripts/validate_deliverables.py`, `scripts/validate_subtitles.py`, `scripts/validate_publication_info.py`, manual visual review | AutoYY | Complete/incomplete/blocked counts |
-| 10. Handoff and resume | Report output paths, manifest, exceptions, and safe restart point | Filesystem inventory and logs | AutoYY | Traceable handoff without redoing completed work |
+| 10. Handoff and resume | Report output paths, manifest, exceptions, safe restart point, structured error codes, and scheduler state | `autoyy diagnose`, `autoyy schedule`, local JSONL events | AutoYY | Traceable handoff without redoing completed work |
 
 ## Supporting skills
 
@@ -65,6 +65,9 @@
 The preferred machine-readable command surface is `python -m autoyy`. Compatibility scripts remain for existing workflows, but their business rules delegate to `src/autoyy`.
 
 - `autoyy doctor`: dependency/assets/work-root preflight; never installs or changes the system.
+- `autoyy profile` / `autoyy batch inventory`: workload timing, size, recognized topics, and legacy topic-name diagnostics.
+- `autoyy diagnose`: local recent failure/error-code summary, stage state, and active leases.
+- `autoyy schedule`: read-only prioritized runnable queue with explicit strategy/capacity; `work claim --stage auto` performs the atomic claim.
 - `autoyy download`: validated manifest/path handling, resumable artifacts, Python worker-pool parallelism, and correct 0/1/2 exit semantics. `scripts/download_from_manifest.ps1` is a thin Windows wrapper.
 - `autoyy batch status|plan`: machine-readable batch inventory and dependency-aware runnable queue.
 - `autoyy work claim|heartbeat|release|status`: atomic per-topic leases for agent isolation, crash recovery, and one-topic-per-worker enforcement.

@@ -20,7 +20,7 @@ def main() -> int:
     parser.add_argument("--allow-empty", action="store_true")
     parser.add_argument("--expected-count", type=int)
     parser.add_argument("--ffprobe-location")
-    parser.add_argument("--workers", type=int, choices=range(1, 17), default=1)
+    parser.add_argument("--workers", type=int, choices=range(1, 17), default=4)
     parser.add_argument("--skip-quality-record", action="store_true", help="Compatibility only; release validation must not use this")
     args = parser.parse_args()
     root = args.output_root.resolve()

@@ -5,6 +5,9 @@ All notable changes to AutoYY are documented here.
 ## [Unreleased]
 
 ### Added
+- Workload profiling, legacy topic inventory diagnostics, local JSONL run observability, and `autoyy diagnose`.
+- Deterministic automatic scheduler with stage capacities plus finish-first, repair-first, and source-first strategies.
+- Explicit ASR worker pool and direct faster-whisper media decoding.
 - `src/autoyy` shared core with safe paths, manifest/media/subtitle/publication validation, state, peer statistics, download orchestration, doctor, and unified CLI.
 - Windows CI for Python 3.11/3.12 and compatibility checks.
 - Deterministic batch voiceover quality gates with source/script hashes, Humanizer/fact/reviewer status, evidence anchors, and cross-topic copy detection.
@@ -15,6 +18,9 @@ All notable changes to AutoYY are documented here.
 - Optional parallel package/voiceover validation with bounded `--workers`.
 
 ### Changed
+- Final package validation now defaults to four workers based on the recorded real-workload benchmark.
+- Large verified media uses sampled state fingerprints instead of full-file rereads; small/text artifacts retain full SHA-256.
+- Download overlaps subtitle discovery with video transfer and preserves source=ready when only subtitle acquisition fails, enabling immediate ASR fallback.
 - Download PowerShell entry is now a compatibility wrapper around the tested Python core.
 - Subtitle, publication, and package validators share one authoritative implementation.
 - Jimeng prompt generation rejects invalid 6+8 titles instead of warning and continuing.

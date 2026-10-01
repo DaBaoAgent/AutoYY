@@ -6,14 +6,16 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
 from .manifest import ManifestRow, is_supported_youtube_url, load_manifest
 from .media import find_primary_subtitle, find_primary_video, probe_media
+from .observability import RunRecorder, record_event
 from .paths import safe_child_path
-from .state import file_fingerprint, recover_running, set_stage, update_state
+from .state import file_fingerprint, media_fingerprint, recover_running, set_stage, update_state
 from .subtitles import validate_srt
 
 
@@ -34,6 +36,8 @@ class DownloadOptions:
     trace: bool = False
     js_runtimes: str | None = None
     command_timeout: int = 7200
+    overlap_assets: bool = True
+    run_id: str = ""
 
 
 def _executable(value: str) -> str | None:
@@ -178,13 +182,13 @@ def _download_video(row: ManifestRow, topic_dir: Path, options: DownloadOptions,
         raise RuntimeError("yt-dlp reported success but no non-empty video exists")
 
 
-def _download_subtitle(row: ManifestRow, topic_dir: Path, options: DownloadOptions, yt_dlp: str) -> str:
+def _download_subtitle(row: ManifestRow, topic_dir: Path, options: DownloadOptions, yt_dlp: str, language: str | None = None) -> str:
     existing = find_primary_subtitle(topic_dir)
     if existing is not None:
         if _subtitle_valid(topic_dir):
             return (row.data.get("subtitle_language") or "").strip()
         _quarantine(existing)
-    language = _select_subtitle_language(row, options, yt_dlp)
+    language = language or _select_subtitle_language(row, options, yt_dlp)
     if not language:
         raise RuntimeError("no usable subtitle track found")
     command = [
@@ -209,42 +213,57 @@ def _download_subtitle(row: ManifestRow, topic_dir: Path, options: DownloadOptio
     return language
 
 
+def _download_error_code(message: str) -> str:
+    lowered = message.lower()
+    if "video failed" in lowered or "no non-empty video" in lowered:
+        return "DOWNLOAD_VIDEO_FAILED"
+    if "subtitle" in lowered or "srt" in lowered:
+        return "DOWNLOAD_SUBTITLE_FAILED"
+    if "timeout" in lowered or "unavailable" in lowered:
+        return "EXTERNAL_COMMAND_FAILED"
+    return "DOWNLOAD_FAILED"
+
+
 def process_row(row: ManifestRow, options: DownloadOptions, yt_dlp: str, ffprobe: str | None) -> dict[str, object]:
+    started = time.perf_counter()
+    base = {"folder_name": row.folder_name, "url": row.url, "attempts": 1}
     if not is_supported_youtube_url(row.url):
-        return {"folder_name": row.folder_name, "url": row.url, "video": False, "subtitle": False, "subtitle_language": "", "attempts": 1, "status": "failed", "error": "unsupported URL"}
+        result = {**base, "video": False, "subtitle": False, "subtitle_language": "", "status": "failed", "error_code": "UNSUPPORTED_URL", "error": "unsupported URL"}
+        result["elapsed_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+        return result
     topic_dir = safe_child_path(options.output_root, row.folder_name)
     topic_dir.mkdir(parents=True, exist_ok=True)
     if _verified_ready(topic_dir, ffprobe):
-        return {"folder_name": row.folder_name, "url": row.url, "video": True, "subtitle": True, "subtitle_language": row.data.get("subtitle_language", ""), "attempts": 0, "status": "ready(skip)"}
+        result = {**base, "video": True, "subtitle": True, "subtitle_language": row.data.get("subtitle_language", ""), "attempts": 0, "status": "ready(skip)", "error_code": "", "error": ""}
+        result["elapsed_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+        return result
     try:
-        _download_video(row, topic_dir, options, yt_dlp, ffprobe)
-        language = _download_subtitle(row, topic_dir, options, yt_dlp)
+        requested_language = (row.data.get("subtitle_language") or "").strip()
+        if options.overlap_assets:
+            with ThreadPoolExecutor(max_workers=3, thread_name_prefix="autoyy-assets") as pool:
+                video_future = pool.submit(_download_video, row, topic_dir, options, yt_dlp, ffprobe)
+                language_future = None if requested_language else pool.submit(_select_subtitle_language, row, options, yt_dlp)
+                language = requested_language or (language_future.result() if language_future else "")
+                if not language:
+                    video_future.result()
+                    raise RuntimeError("no usable subtitle track found")
+                subtitle_future = pool.submit(_download_subtitle, row, topic_dir, options, yt_dlp, language)
+                video_future.result()
+                language = subtitle_future.result()
+        else:
+            _download_video(row, topic_dir, options, yt_dlp, ffprobe)
+            language = _download_subtitle(row, topic_dir, options, yt_dlp, requested_language or None)
         ready = _verified_ready(topic_dir, ffprobe)
-        return {
-            "folder_name": row.folder_name,
-            "url": row.url,
-            "video": _video_valid(topic_dir, ffprobe),
-            "subtitle": _subtitle_valid(topic_dir),
-            "subtitle_language": language,
-            "attempts": 1,
-            "status": "complete" if ready else "incomplete",
-            "error": "" if ready else "media/subtitle verification failed",
-        }
+        result = {**base, "video": _video_valid(topic_dir, ffprobe), "subtitle": _subtitle_valid(topic_dir), "subtitle_language": language, "status": "complete" if ready else "incomplete", "error_code": "" if ready else "VERIFY_FAILED", "error": "" if ready else "media/subtitle verification failed"}
     except Exception as exc:  # noqa: BLE001
-        return {
-            "folder_name": row.folder_name,
-            "url": row.url,
-            "video": _video_valid(topic_dir, ffprobe),
-            "subtitle": _subtitle_valid(topic_dir),
-            "subtitle_language": (row.data.get("subtitle_language") or "").strip(),
-            "attempts": 1,
-            "status": "failed",
-            "error": str(exc)[:500],
-        }
-
+        message = str(exc)[:500]
+        result = {**base, "video": _video_valid(topic_dir, ffprobe), "subtitle": _subtitle_valid(topic_dir), "subtitle_language": requested_language, "status": "failed", "error_code": _download_error_code(message), "error": message}
+    result["elapsed_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+    record_event(options.output_root, "topic_finish", run_id=options.run_id, command="download", topic=row.folder_name, stage="source", status=str(result["status"]), code=str(result.get("error_code", "")), message=str(result.get("error", "")), elapsed_ms=float(result["elapsed_ms"]))
+    return result
 
 def _write_status(path: Path, results: list[dict[str, object]]) -> None:
-    fields = ["folder_name", "url", "video", "subtitle", "subtitle_language", "attempts", "status", "error"]
+    fields = ["folder_name", "url", "video", "subtitle", "subtitle_language", "attempts", "status", "error_code", "elapsed_ms", "error"]
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + f".tmp-{os.getpid()}")
     with tmp.open("w", encoding="utf-8-sig", newline="") as handle:
@@ -258,13 +277,12 @@ def _apply_result_state(state: dict, options: DownloadOptions, item: dict[str, o
     topic_dir = safe_child_path(options.output_root, str(item.get("folder_name", "")))
     video = find_primary_video(topic_dir) if topic_dir.is_dir() else None
     subtitle = find_primary_subtitle(topic_dir) if topic_dir.is_dir() else None
-    complete = item.get("status") in {"complete", "ready(skip)"}
-    video_ready = item.get("video") is True and complete
-    subtitle_ready = item.get("subtitle") is True and complete
+    video_ready = item.get("video") is True
+    subtitle_ready = item.get("subtitle") is True
     error = str(item.get("error", ""))
     set_stage(
         state, topic_dir.name, "source", "ready" if video_ready else "failed",
-        fingerprint=file_fingerprint(video) if video_ready and video else "missing",
+        fingerprint=media_fingerprint(video) if video_ready and video else "missing",
         reason="" if video_ready else (error or "source verification failed"),
     )
     set_stage(
@@ -280,23 +298,28 @@ def _checkpoint_result(options: DownloadOptions, results: list[dict[str, object]
     _write_status(options.output_root / "下载状态.csv", sorted(results, key=lambda row: str(row.get("folder_name", ""))))
 
 
+def _usage_error(code: str, message: str) -> tuple[int, dict[str, object]]:
+    return 2, {"valid": False, "error_code": code, "error": message, "results": []}
+
+
 def run_download(options: DownloadOptions) -> tuple[int, dict[str, object]]:
     options.output_root = options.output_root.resolve()
+    recorder: RunRecorder | None = None
     try:
         rows = load_manifest(options.manifest, output_root=options.output_root, validate_urls=False)
     except (OSError, ValueError) as exc:
-        return 2, {"valid": False, "error": str(exc), "results": []}
+        return _usage_error("MANIFEST_INVALID", str(exc))
     if options.parallel < 1 or options.parallel > 8:
-        return 2, {"valid": False, "error": "parallel must be between 1 and 8", "results": []}
+        return _usage_error("INVALID_WORKERS", "parallel/workers must be between 1 and 8")
     if options.aria2_connections < 1 or options.aria2_connections > 16:
-        return 2, {"valid": False, "error": "aria2_connections must be between 1 and 16", "results": []}
+        return _usage_error("INVALID_ARIA2_CONNECTIONS", "aria2_connections must be between 1 and 16")
     if options.min_height < 144 or options.max_height > 4320 or options.min_height > options.max_height:
-        return 2, {"valid": False, "error": "invalid min/max height range", "results": []}
+        return _usage_error("INVALID_HEIGHT_RANGE", "invalid min/max height range")
     if options.ffmpeg_location and not Path(options.ffmpeg_location).is_dir():
-        return 2, {"valid": False, "error": f"ffmpeg location not found: {options.ffmpeg_location}", "results": []}
+        return _usage_error("FFMPEG_LOCATION_NOT_FOUND", f"ffmpeg location not found: {options.ffmpeg_location}")
     yt_dlp = _executable(options.yt_dlp)
     if not options.plan_only and not yt_dlp:
-        return 2, {"valid": False, "error": f"yt-dlp executable not found: {options.yt_dlp}", "results": []}
+        return _usage_error("YTDLP_NOT_FOUND", f"yt-dlp executable not found: {options.yt_dlp}")
     if not options.js_runtimes:
         if shutil.which("node"):
             options.js_runtimes = "node"
@@ -309,10 +332,12 @@ def run_download(options: DownloadOptions) -> tuple[int, dict[str, object]]:
     try:
         update_state(options.output_root, lambda state: recover_running(state), create=True)
     except (OSError, ValueError) as exc:
-        return 2, {"valid": False, "error": str(exc), "results": []}
+        return _usage_error("STATE_UPDATE_FAILED", str(exc))
     ffprobe = _ffprobe_path(options.ffmpeg_location)
     if not ffprobe:
-        return 2, {"valid": False, "error": "ffprobe executable not found; media completion cannot be verified", "results": []}
+        return _usage_error("FFPROBE_NOT_FOUND", "ffprobe executable not found; media completion cannot be verified")
+    recorder = RunRecorder(options.output_root, "download", run_id=options.run_id or None)
+    options.run_id = recorder.run_id
     results: list[dict[str, object]] = []
     interrupted = False
     try:
@@ -332,13 +357,18 @@ def run_download(options: DownloadOptions) -> tuple[int, dict[str, object]]:
     failed = sum(item.get("status") not in {"complete", "ready(skip)"} for item in results)
     if interrupted:
         failed += 1
+    total_elapsed_ms = round(sum(float(item.get("elapsed_ms") or 0) for item in results), 3)
     summary = {
         "valid": failed == 0 and len(results) == len(rows),
+        "run_id": options.run_id,
         "topic_count": len(rows),
         "complete_count": sum(item.get("status") in {"complete", "ready(skip)"} for item in results),
         "failed_count": failed,
         "interrupted": interrupted,
+        "topic_elapsed_ms_sum": total_elapsed_ms,
         "status_csv": str(options.output_root / "下载状态.csv"),
         "results": results,
     }
+    if recorder:
+        recorder.finish(status="success" if summary["valid"] else "failed", code="" if summary["valid"] else "DOWNLOAD_BATCH_INCOMPLETE", details={"topics": len(rows), "failed": failed})
     return (0 if summary["valid"] else 1), summary

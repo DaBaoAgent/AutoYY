@@ -37,6 +37,22 @@ def file_fingerprint(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def media_fingerprint(path: Path, *, sample_bytes: int = 1024 * 1024) -> str:
+    if not path.is_file():
+        return "missing"
+    size = path.stat().st_size
+    if size <= sample_bytes * 8:
+        return file_fingerprint(path)
+    digest = hashlib.sha256()
+    digest.update(str(size).encode("ascii"))
+    offsets = (0, max(0, size // 2 - sample_bytes // 2), max(0, size - sample_bytes))
+    with path.open("rb") as handle:
+        for offset in offsets:
+            handle.seek(offset)
+            digest.update(handle.read(sample_bytes))
+    return f"sha256-sampled:{size}:{digest.hexdigest()}"
+
+
 def state_path(root: Path) -> Path:
     return root / ".autoyy" / "state.json"
 

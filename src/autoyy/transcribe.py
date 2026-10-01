@@ -5,14 +5,18 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .io import configure_utf8_stdio
 from .manifest import load_manifest
 from .media import find_primary_subtitle, find_primary_video
+from .observability import RunRecorder, record_event
 from .paths import discover_topics, safe_child_path
 from .result import EXIT_FAILED, EXIT_OK, EXIT_USAGE
-from .state import file_fingerprint, recover_running, set_stage, update_state
+from .state import file_fingerprint, media_fingerprint, recover_running, set_stage, update_state
 from .subtitles import validate_srt
 
 _BACKEND_CACHE: dict[str, object] = {}
@@ -125,7 +129,7 @@ def transcribe_whisper(
 ) -> list[tuple[float, float, str]]:
     from faster_whisper import WhisperModel
 
-    key = f"whisper:{model_size}:{device}"
+    key = f"whisper:{model_size}:{device}:{threading.get_ident()}"
     if key not in _BACKEND_CACHE:
         compute_type = "int8" if device == "cpu" else "float16"
         _BACKEND_CACHE[key] = WhisperModel(model_size, device=device, compute_type=compute_type)
@@ -147,7 +151,7 @@ def transcribe_whisper(
 def transcribe_funasr(wav_path: Path, device: str) -> list[tuple[float, float, str]]:
     from funasr import AutoModel
 
-    key = f"funasr:{device}"
+    key = f"funasr:{device}:{threading.get_ident()}"
     if key not in _BACKEND_CACHE:
         _BACKEND_CACHE[key] = AutoModel(
             model="paraformer-zh",
@@ -167,25 +171,26 @@ def transcribe_funasr(wav_path: Path, device: str) -> list[tuple[float, float, s
 
 
 def process_folder(folder: Path, args: argparse.Namespace, backend_name: str, ffmpeg: str | None, language: str | None = None) -> dict[str, object]:
+    started = time.perf_counter()
     if not folder.is_dir():
-        return {"folder": folder.name, "status": "failed", "reason": "topic_directory_missing"}
+        return {"folder": folder.name, "status": "failed", "reason": "topic_directory_missing", "error_code": "TOPIC_DIRECTORY_MISSING"}
     video = find_primary_video(folder)
     if video is None:
-        return {"folder": folder.name, "status": "failed", "reason": "video_missing"}
+        return {"folder": folder.name, "status": "failed", "reason": "video_missing", "error_code": "VIDEO_MISSING"}
     existing = find_primary_subtitle(folder)
     invalid_existing: Path | None = None
     if existing is not None and not args.overwrite:
         if validate_srt(existing)["valid"]:
-            return {"folder": folder.name, "status": "ready", "reason": "subtitle_exists", "subtitle": existing.name}
+            return {"folder": folder.name, "status": "ready", "reason": "subtitle_exists", "subtitle": existing.name, "error_code": "", "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3)}
         if args.dry_run:
-            return {"folder": folder.name, "status": "pending", "reason": "invalid_subtitle_repair"}
+            return {"folder": folder.name, "status": "pending", "reason": "invalid_subtitle_repair", "error_code": "INVALID_SUBTITLE", "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3)}
         invalid_existing = existing
     if args.dry_run:
-        return {"folder": folder.name, "status": "pending", "reason": "dry_run"}
-    if not ffmpeg:
-        return {"folder": folder.name, "status": "failed", "reason": "ffmpeg_missing"}
+        return {"folder": folder.name, "status": "pending", "reason": "dry_run", "error_code": "", "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3)}
     try:
         backend = resolve_backend(backend_name, language)
+        if backend == "funasr" and not ffmpeg:
+            return {"folder": folder.name, "status": "failed", "reason": "ffmpeg_missing", "error_code": "FFMPEG_MISSING", "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3)}
         if invalid_existing is not None:
             invalid_target = invalid_existing.with_name(invalid_existing.name + ".invalid")
             counter = 1
@@ -193,29 +198,25 @@ def process_folder(folder: Path, args: argparse.Namespace, backend_name: str, ff
                 invalid_target = invalid_existing.with_name(invalid_existing.name + f".invalid-{counter}")
                 counter += 1
             invalid_existing.replace(invalid_target)
-        with tempfile.TemporaryDirectory(prefix="autoyy-asr-") as tmp:
-            wav = Path(tmp) / "audio.wav"
-            extract_audio(video, wav, ffmpeg, args.ffmpeg_timeout)
-            if backend == "funasr":
+        if backend == "whisper":
+            segments = transcribe_whisper(video, args.model_size, language, args.device, args.vad, args.beam_size)
+        else:
+            with tempfile.TemporaryDirectory(prefix="autoyy-asr-") as tmp:
+                wav = Path(tmp) / "audio.wav"
+                extract_audio(video, wav, ffmpeg, args.ffmpeg_timeout)
                 segments = transcribe_funasr(wav, args.device)
-            else:
-                segments = transcribe_whisper(
-                    wav, args.model_size, language, args.device, args.vad, args.beam_size
-                )
-            target = folder / "字幕.srt"
-            write_srt_atomic(target, segments)
-            report = validate_srt(target)
-            if not report["valid"]:
-                raise RuntimeError("generated subtitle failed SRT validation: " + "; ".join(report["issues"][:3]))
-            return {
-                "folder": folder.name, "status": "ready", "reason": "transcribed",
-                "segments": len(segments), "backend": backend, "language": language or "auto",
-            }
+        target = folder / "字幕.srt"
+        write_srt_atomic(target, segments)
+        report = validate_srt(target)
+        if not report["valid"]:
+            raise RuntimeError("generated subtitle failed SRT validation: " + "; ".join(report["issues"][:3]))
+        result = {"folder": folder.name, "status": "ready", "reason": "transcribed", "segments": len(segments), "backend": backend, "language": language or "auto", "error_code": ""}
     except OSError as exc:
-        return {"folder": folder.name, "status": "failed", "reason": "disk_or_file_error", "error": str(exc)[:300]}
+        result = {"folder": folder.name, "status": "failed", "reason": "disk_or_file_error", "error_code": "DISK_OR_FILE_ERROR", "error": str(exc)[:300]}
     except Exception as exc:  # noqa: BLE001
-        return {"folder": folder.name, "status": "failed", "reason": "transcription_failed", "error": str(exc)[:300]}
-
+        result = {"folder": folder.name, "status": "failed", "reason": "transcription_failed", "error_code": "ASR_TRANSCRIPTION_FAILED", "error": str(exc)[:300]}
+    result["elapsed_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+    return result
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AutoYY local ASR fallback: source video -> 字幕.srt")
@@ -234,6 +235,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--only-missing", action="store_true", help="Compatibility alias; missing-only is already the default")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--workers", type=int, choices=range(1, 5), default=1)
+    parser.add_argument("--run-id", default="")
     return parser
 
 
@@ -251,10 +254,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.manifest:
             rows = load_manifest(args.manifest, output_root=root)
             folders = [safe_child_path(root, row.folder_name) for row in rows]
-            language_by_folder = {
-                row.folder_name: normalize_language(row.data.get("source_language"))
-                for row in rows
-            }
+            language_by_folder = {row.folder_name: normalize_language(row.data.get("source_language")) for row in rows}
         else:
             folders = discover_topics(root)
     except (OSError, ValueError) as exc:
@@ -270,74 +270,82 @@ def main(argv: list[str] | None = None) -> int:
         subtitle = find_primary_subtitle(folder)
         return args.overwrite or subtitle is None or not validate_srt(subtitle)["valid"]
 
-    needs_backend = any(needs_transcription(folder) for folder in folders)
     default_language = normalize_language(args.language)
-
     if args.dry_run:
-        results = [
-            process_folder(
-                folder, args, args.backend, None,
-                language_by_folder.get(folder.name) or default_language,
-            )
-            for folder in folders
-        ]
+        results = [process_folder(folder, args, args.backend, None, language_by_folder.get(folder.name) or default_language) for folder in folders]
         for item in results:
             print(f"{item['status']:8s} {item['folder']} {item['reason']}")
         failed = sum(item["status"] == "failed" for item in results)
         print(f"summary pending={sum(item['status'] == 'pending' for item in results)} failed={failed} total={len(results)}")
         return EXIT_FAILED if failed else EXIT_OK
 
-    ffmpeg = resolve_ffmpeg(args.ffmpeg_location) if needs_backend else None
-    if needs_backend and not ffmpeg:
-        print("ffmpeg not found; use --ffmpeg-location")
+    backend_by_folder: dict[str, str] = {}
+    try:
+        for folder in folders:
+            if needs_transcription(folder):
+                language = language_by_folder.get(folder.name) or default_language
+                backend_by_folder[folder.name] = resolve_backend(args.backend, language)
+    except RuntimeError as exc:
+        print(str(exc))
         return EXIT_USAGE
-    if needs_backend:
-        if args.backend != "auto" and not _backend_available(args.backend):
-            print(f"{args.backend} unavailable; install the matching ASR extra")
-            return EXIT_USAGE
-        if args.backend == "auto" and not (_backend_available("whisper") or _backend_available("funasr")):
-            print("No ASR backend; install .[asr-whisper] or .[asr-funasr]")
-            return EXIT_USAGE
+    ffmpeg = resolve_ffmpeg(args.ffmpeg_location)
+    if any(value == "funasr" for value in backend_by_folder.values()) and not ffmpeg:
+        print("ffmpeg not found; FunASR requires --ffmpeg-location or ffmpeg on PATH")
+        return EXIT_USAGE
     try:
         update_state(root, lambda state: recover_running(state), create=True)
     except (OSError, ValueError) as exc:
         print(str(exc))
         return EXIT_USAGE
 
+    recorder = RunRecorder(root, "transcribe", run_id=args.run_id or None)
+    args.run_id = recorder.run_id
     results: list[dict[str, object]] = []
-    for folder in folders:
+
+    def execute(folder: Path) -> tuple[Path, dict[str, object]]:
         language = language_by_folder.get(folder.name) or default_language
-        result = process_folder(folder, args, args.backend, ffmpeg, language)
-        results.append(result)
+        backend = backend_by_folder.get(folder.name, args.backend)
+        return folder, process_folder(folder, args, backend, ffmpeg, language)
+
+    def checkpoint(folder: Path, result: dict[str, object]) -> None:
         video = find_primary_video(folder) if folder.is_dir() else None
         subtitle = find_primary_subtitle(folder) if folder.is_dir() else None
-
-        def apply_result(state, *, folder=folder, result=result, video=video, subtitle=subtitle):
+        def apply_result(state):
             if video:
-                set_stage(state, folder.name, "source", "ready", fingerprint=file_fingerprint(video))
+                set_stage(state, folder.name, "source", "ready", fingerprint=media_fingerprint(video))
             if subtitle and result["status"] == "ready":
                 set_stage(state, folder.name, "subtitle", "ready", fingerprint=file_fingerprint(subtitle))
             elif result["status"] == "failed":
-                set_stage(
-                    state, folder.name, "subtitle", "failed", fingerprint="missing",
-                    reason=str(result.get("reason", "transcription_failed")),
-                )
+                set_stage(state, folder.name, "subtitle", "failed", fingerprint="missing", reason=str(result.get("reason", "transcription_failed")))
             else:
-                set_stage(
-                    state, folder.name, "subtitle", "blocked", fingerprint="missing",
-                    reason=str(result.get("reason", "subtitle unavailable")),
-                )
+                set_stage(state, folder.name, "subtitle", "blocked", fingerprint="missing", reason=str(result.get("reason", "subtitle unavailable")))
+        update_state(root, apply_result, create=True)
+        record_event(root, "topic_finish", run_id=recorder.run_id, command="transcribe", topic=folder.name, stage="subtitle", status=str(result["status"]), code=str(result.get("error_code", "")), message=str(result.get("error", result.get("reason", ""))), elapsed_ms=float(result.get("elapsed_ms") or 0), details={"backend": result.get("backend", backend_by_folder.get(folder.name, "")), "language": result.get("language", language_by_folder.get(folder.name) or default_language or "auto")})
 
-        try:
-            update_state(root, apply_result, create=True)
-        except OSError as exc:
-            print(str(exc))
-            return EXIT_USAGE
+    try:
+        if args.workers == 1:
+            for folder in folders:
+                done_folder, result = execute(folder)
+                results.append(result)
+                checkpoint(done_folder, result)
+        else:
+            with ThreadPoolExecutor(max_workers=args.workers, thread_name_prefix="autoyy-asr") as pool:
+                futures = {pool.submit(execute, folder): folder for folder in folders}
+                for future in as_completed(futures):
+                    done_folder, result = future.result()
+                    results.append(result)
+                    checkpoint(done_folder, result)
+    except OSError as exc:
+        recorder.finish(status="error", code="STATE_UPDATE_FAILED", message=str(exc))
+        print(str(exc))
+        return EXIT_USAGE
+    results.sort(key=lambda item: str(item.get("folder", "")))
     for item in results:
         print(f"{item['status']:8s} {item['folder']} {item['reason']}")
     failed = sum(item["status"] != "ready" for item in results)
     ready = sum(item["status"] == "ready" for item in results)
-    print(f"summary ready={ready} failed={failed} total={len(results)}")
+    recorder.finish(status="success" if not failed else "failed", code="" if not failed else "ASR_BATCH_INCOMPLETE", details={"ready": ready, "failed": failed, "workers": args.workers})
+    print(f"summary run_id={recorder.run_id} ready={ready} failed={failed} total={len(results)} workers={args.workers}")
     return EXIT_FAILED if failed else EXIT_OK
 
 
