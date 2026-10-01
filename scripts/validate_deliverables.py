@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from autoyy.deliverables import validate_root
+from autoyy.paths import discover_topics
 from autoyy.result import EXIT_FAILED, EXIT_OK, EXIT_USAGE
 
 
@@ -25,14 +26,19 @@ def main() -> int:
     if not root.is_dir():
         print(f"Output root does not exist: {root}", file=sys.stderr)
         return EXIT_USAGE
-    ffprobe = shutil.which("ffprobe")
-    if args.ffprobe_location:
-        candidate = Path(args.ffprobe_location) / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe")
-        if candidate.is_file():
-            ffprobe = str(candidate)
-    if not ffprobe:
-        print("ffprobe is required for final media validation", file=sys.stderr)
-        return EXIT_USAGE
+
+    folders = discover_topics(root)
+    ffprobe = None
+    if folders:
+        ffprobe = shutil.which("ffprobe")
+        if args.ffprobe_location:
+            candidate = Path(args.ffprobe_location) / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe")
+            if candidate.is_file():
+                ffprobe = str(candidate)
+        if not ffprobe:
+            print("ffprobe is required for final media validation", file=sys.stderr)
+            return EXIT_USAGE
+
     summary = validate_root(
         root,
         allow_empty=args.allow_empty,
@@ -42,6 +48,7 @@ def main() -> int:
     )
     rendered = json.dumps(summary, ensure_ascii=False, indent=2)
     if args.json_out:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(rendered, encoding="utf-8")
     print(rendered)
     return EXIT_OK if summary["valid"] else EXIT_FAILED

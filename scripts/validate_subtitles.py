@@ -31,14 +31,6 @@ def main() -> int:
     if not root.is_dir():
         print(f"Directory does not exist: {root}", file=sys.stderr)
         return EXIT_USAGE
-    ffprobe = shutil.which("ffprobe")
-    if args.ffprobe_location:
-        candidate = Path(args.ffprobe_location) / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe")
-        if candidate.is_file():
-            ffprobe = str(candidate)
-    if not ffprobe:
-        print("ffprobe not found; use --ffprobe-location", file=sys.stderr)
-        return EXIT_USAGE
     try:
         if args.manifest:
             rows = load_manifest(args.manifest, output_root=root)
@@ -48,11 +40,24 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return EXIT_USAGE
+
     global_issues: list[str] = []
     if not folders and not args.allow_empty:
         global_issues.append("no topic directories")
     if args.expected_count is not None and len(folders) != args.expected_count:
         global_issues.append(f"topic count {len(folders)}, expected {args.expected_count}")
+
+    ffprobe = None
+    if folders:
+        ffprobe = shutil.which("ffprobe")
+        if args.ffprobe_location:
+            candidate = Path(args.ffprobe_location) / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe")
+            if candidate.is_file():
+                ffprobe = str(candidate)
+        if not ffprobe:
+            print("ffprobe not found; use --ffprobe-location", file=sys.stderr)
+            return EXIT_USAGE
+
     results = []
     for folder in folders:
         issues: list[str] = []
@@ -81,6 +86,7 @@ def main() -> int:
     summary = {"root": str(root), "folder_count": len(results), "valid_count": len(results) - invalid, "invalid_count": invalid, "issues": global_issues, "results": results}
     rendered = json.dumps(summary, ensure_ascii=False, indent=2)
     if args.json_out:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(rendered, encoding="utf-8")
     print(rendered)
     return EXIT_OK if not global_issues and invalid == 0 else EXIT_FAILED
