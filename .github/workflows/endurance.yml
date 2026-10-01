@@ -1,0 +1,55 @@
+name: endurance
+
+on:
+  workflow_dispatch:
+    inputs:
+      topics:
+        description: Synthetic topic count (1-500)
+        required: false
+        default: "500"
+      operations:
+        description: Maximum operation budget
+        required: false
+        default: "6000"
+      duration_seconds:
+        description: Optional duration cap; 0 disables it
+        required: false
+        default: "0"
+  schedule:
+    - cron: "0 3 * * 0"
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
+jobs:
+  control-plane-endurance:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[dev]"
+      - name: Long control-plane soak
+        shell: pwsh
+        run: |
+          $topics = "${{ github.event.inputs.topics }}"
+          $operations = "${{ github.event.inputs.operations }}"
+          $duration = "${{ github.event.inputs.duration_seconds }}"
+          if (-not $topics) { $topics = "500" }
+          if (-not $operations) { $operations = "6000" }
+          if (-not $duration) { $duration = "0" }
+          $args = @(
+            "-m", "autoyy", "runtime", "soak",
+            "--topics", $topics,
+            "--operations", $operations,
+            "--workers", "8",
+            "--fault-rate", "0.05",
+            "--crash-rate", "0.02",
+            "--seed", "20261001",
+            "--json"
+          )
+          if ([double]$duration -gt 0) { $args += @("--duration-seconds", $duration) }
+          python @args

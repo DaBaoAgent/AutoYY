@@ -58,3 +58,6 @@ jobs:
           .\.wheel-venv\Scripts\autoyy.exe transcribe --help
           .\.wheel-venv\Scripts\autoyy.exe resources --json
           .\.wheel-venv\Scripts\autoyy.exe runtime --help
+          .\.wheel-venv\Scripts\autoyy.exe supervisor --help
+          .\.wheel-venv\Scripts\autoyy.exe history --help
+          .\.wheel-venv\Scripts\autoyy.exe queue --help

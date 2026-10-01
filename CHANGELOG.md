@@ -5,6 +5,10 @@ All notable changes to AutoYY are documented here.
 ## [Unreleased]
 
 ### Added
+- Persistent `autoyy supervisor` with single-process lock, heartbeat/session generations, restart recovery, stop requests, retry ledger, and periodic history-driven worker retuning.
+- Queue priority/SLA policy with starvation-resistant wait-time aging and scheduler visibility.
+- Local `autoyy history` latency/failure summaries and conservative download/ASR worker recommendations.
+- 100-500 topic duration-capable endurance soak support for long-running fault/crash injection.
 - Unattended `autoyy runtime plan|tick|run` control plane that executes only deterministic machine stages and stops at lease-bound editorial/visual stages.
 - CPU/RAM/NVIDIA resource detection with automatic ASR device and bounded worker recommendations.
 - Deterministic control-plane soak/fault-injection command for lease, state recovery, capacity, and scheduler invariants.
@@ -23,6 +27,7 @@ All notable changes to AutoYY are documented here.
 - Optional parallel package/voiceover validation with bounded `--workers`.
 
 ### Changed
+- Automatic claims skip expensive inventory diagnostics inside the claim critical section, improving 100-topic fault-soak throughput without changing scheduling semantics.
 - Download worker pools adapt between waves when retryable network/rate-limit failures spike; explicit `--rate-limit` and `--fixed-workers` controls are available.
 - ASR defaults to automatic CPU/CUDA selection and falls back from CUDA/CUDNN/OOM failures to CPU per topic.
 - Final package validation now defaults to four workers based on the recorded real-workload benchmark.
@@ -38,6 +43,7 @@ All notable changes to AutoYY are documented here.
 - Download and ASR batches checkpoint state incrementally, with revision-conflict retries for concurrent writers.
 
 ### Fixed
+- `voiceover attest` no longer receives unrelated download retry arguments from the CLI adapter.
 - Failed download rows no longer return an overall success code.
 - Zero-byte files cannot satisfy resume/ready checks.
 - Empty validation roots no longer pass by default.

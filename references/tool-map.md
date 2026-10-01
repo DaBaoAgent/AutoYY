@@ -30,7 +30,7 @@
 | 7. Publication information | Consult the peer hit library, then write or recursively refresh a factual Douyin-style title and five tags; feed post-publish results back | File editing, PowerShell for safe bulk rewrites, `scripts/peer_hit_library.py`, `scripts/validate_publication_info.py`, `rg` for legacy fields | AutoYY | Exactly two lines; title ≤25 characters; exactly five hashtags; library updated with new evidence |
 | 8. Cover production | Create matching 3:4 and 4:3 topic covers or 1:1 and 4:3 collection covers | Image generation, image viewer, dimension inspection, approved assets | Imagegen | Exact Chinese text, approved typography, correct ratios |
 | 9. Package validation | Check media, subtitles, scripts, publication files, covers, ratios, duplicates, zero-byte files, and subtitle alignment | `scripts/validate_deliverables.py`, `scripts/validate_subtitles.py`, `scripts/validate_publication_info.py`, manual visual review | AutoYY | Complete/incomplete/blocked counts |
-| 10. Handoff and resume | Report output paths, manifest, exceptions, safe restart point, structured error codes, and scheduler state | `autoyy diagnose`, `autoyy schedule`, local JSONL events | AutoYY | Traceable handoff without redoing completed work |
+| 10. Handoff and resume | Report output paths, manifest, exceptions, safe restart point, structured error codes, scheduler/SLA state, and supervisor generation | `autoyy diagnose`, `autoyy schedule`, `autoyy supervisor status`, local JSONL events | AutoYY | Traceable handoff without redoing completed work |
 
 ## Supporting skills
 
@@ -67,7 +67,10 @@ The preferred machine-readable command surface is `python -m autoyy`. Compatibil
 - `autoyy doctor`: dependency/assets/work-root preflight; never installs or changes the system.
 - `autoyy resources`: local CPU/RAM/NVIDIA capability snapshot and bounded worker recommendations.
 - `autoyy runtime plan|tick|run`: unattended control plane for source/subtitle/package stages; deliberately yields lease-bound voiceover/publication/cover work to external Agents/humans.
-- `autoyy runtime soak`: deterministic synthetic fault injection for scheduler/state/lease recovery invariants; never touches production projects.
+- `autoyy runtime soak`: deterministic synthetic fault injection for scheduler/state/lease recovery invariants; supports up to 500 topics and duration-bounded endurance runs; never touches production projects.
+- `autoyy supervisor run|status|stop`: persistent long-batch control plane with single-process locking, restart recovery, stop marker, retry ledger, heartbeat, and periodic history-based worker tuning.
+- `autoyy history`: local stage p50/p95, failure-code mix, and bounded worker recommendations derived from structured run events.
+- `autoyy queue show|set|clear`: explicit per-topic priority/SLA controls; scheduler aging prevents permanent starvation and never changes gate semantics.
 - `autoyy profile` / `autoyy batch inventory`: workload timing, size, recognized topics, and legacy topic-name diagnostics.
 - `autoyy diagnose`: local recent failure/error-code summary, stage state, and active leases.
 - `autoyy schedule`: read-only prioritized runnable queue with explicit strategy/capacity; `work claim --stage auto` performs the atomic claim.

@@ -145,8 +145,8 @@ def _lease_path(root: Path, topic: str, stage: str) -> Path:
     return _lease_dir(root) / f"{digest}.json"
 
 
-def _existing_worker_lease(root: Path, worker_id: str) -> dict[str, Any] | None:
-    for lease in list_leases(root):
+def _existing_worker_lease(root: Path, worker_id: str, leases: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+    for lease in leases if leases is not None else list_leases(root):
         if lease.get("worker_id") == worker_id:
             return lease
     return None
@@ -171,8 +171,8 @@ def claim_work(
         raise ValueError(f"lease_seconds must be {MIN_LEASE_SECONDS}-{MAX_LEASE_SECONDS}")
     root = root.resolve()
     with _claim_lock(root), _worker_lock(root, worker_id):
-        cleanup_expired_leases(root)
-        existing = _existing_worker_lease(root, worker_id)
+        active_leases = list_leases(root)
+        existing = _existing_worker_lease(root, worker_id, active_leases)
         if existing:
             if (stage != "auto" and existing.get("stage") != stage) or (topic is not None and existing.get("topic") != topic):
                 raise RuntimeError(
@@ -180,9 +180,11 @@ def claim_work(
                     "release it before claiming different work"
                 )
             return {"ok": True, "reused": True, "lease": existing}
-        active_leases = list_leases(root)
         if stage == "auto":
-            schedule = scheduler_plan(root, capabilities=capabilities, active_leases=active_leases, strategy=strategy)
+            schedule = scheduler_plan(
+                root, capabilities=capabilities, active_leases=active_leases,
+                strategy=strategy, include_inventory=False,
+            )
             candidates = schedule["candidates"]
         else:
             active_stage_count = sum(item.get("stage") == stage for item in active_leases)

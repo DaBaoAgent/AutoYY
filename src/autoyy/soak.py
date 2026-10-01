@@ -21,9 +21,10 @@ def run_control_plane_soak(
     fault_rate: float = 0.05,
     crash_rate: float = 0.02,
     seed: int = 1,
+    duration_seconds: float | None = None,
 ) -> dict[str, Any]:
-    if topics < 1 or topics > 99:
-        raise ValueError("topics must be between 1 and 99")
+    if topics < 1 or topics > 500:
+        raise ValueError("topics must be between 1 and 500")
     if operations < 1 or operations > 100_000:
         raise ValueError("operations must be between 1 and 100000")
     if workers < 1 or workers > 32:
@@ -32,6 +33,8 @@ def run_control_plane_soak(
         raise ValueError("fault_rate must be >=0 and <1")
     if not 0 <= crash_rate < 1:
         raise ValueError("crash_rate must be >=0 and <1")
+    if duration_seconds is not None and duration_seconds <= 0:
+        raise ValueError("duration_seconds must be positive")
     rng = random.Random(seed)
     started = time.perf_counter()
     injected = 0
@@ -58,11 +61,14 @@ def run_control_plane_soak(
         root = Path(tmp)
         state = empty_state()
         for index in range(1, topics + 1):
-            name = f"{index:02d}-soak-{index}"
+            prefix = ((index - 1) % 99) + 1
+            name = f"{prefix:02d}-soak-{index:04d}"
             (root / name).mkdir()
             set_stage(state, name, "source", "pending", fingerprint="")
         save_state(root, state)
         while executed < operations:
+            if duration_seconds is not None and time.perf_counter() - started >= duration_seconds:
+                break
             claims: list[dict[str, Any]] = []
             claimed_topics: set[str] = set()
             for worker_index in range(workers):
@@ -91,9 +97,11 @@ def run_control_plane_soak(
                 max_active_by_stage[stage] = max(max_active_by_stage[stage], count)
                 if count > DEFAULT_STAGE_LIMITS[stage]:
                     capacity_violations += 1
+            transitions: list[tuple[dict[str, Any], str, str, str]] = []
+            releases: list[str] = []
             for lease in claims:
                 if executed >= operations:
-                    release_work(root, str(lease["token"]))
+                    releases.append(str(lease["token"]))
                     continue
                 executed += 1
                 if rng.random() < crash_rate:
@@ -103,21 +111,22 @@ def run_control_plane_soak(
                 fail = rng.random() < fault_rate
                 if fail:
                     injected += 1
-                    status = "failed"
-                    reason = "SOAK_TRANSIENT_FAULT"
-                    fingerprint = "fault"
+                    status, reason, fingerprint = "failed", "SOAK_TRANSIENT_FAULT", "fault"
                 else:
                     successes += 1
-                    status = "ready"
-                    reason = ""
-                    fingerprint = f"soak:{executed}"
-                def apply(state, *, lease=lease, status=status, fingerprint=fingerprint, reason=reason):
-                    set_stage(
-                        state, str(lease["topic"]), str(lease["stage"]), status,
-                        fingerprint=fingerprint, reason=reason,
-                    )
+                    status, reason, fingerprint = "ready", "", f"soak:{executed}"
+                transitions.append((lease, status, fingerprint, reason))
+                releases.append(str(lease["token"]))
+            if transitions:
+                def apply(state, transitions=tuple(transitions)):
+                    for lease, status, fingerprint, reason in transitions:
+                        set_stage(
+                            state, str(lease["topic"]), str(lease["stage"]), status,
+                            fingerprint=fingerprint, reason=reason,
+                        )
                 update_state(root, apply, create=True)
-                release_work(root, str(lease["token"]))
+            for token in releases:
+                release_work(root, token)
         final_state = load_state(root)
         completed = 0
         failed_stages = 0
@@ -135,6 +144,7 @@ def run_control_plane_soak(
         "workers": workers,
         "fault_rate": fault_rate,
         "crash_rate": crash_rate,
+        "duration_seconds": duration_seconds,
         "faults_injected": injected,
         "crashes_injected": crashes,
         "successful_transitions": successes,
@@ -147,5 +157,6 @@ def run_control_plane_soak(
         "max_active_by_stage": dict(max_active_by_stage),
         "elapsed_seconds": round(elapsed, 3),
         "operations_per_second": round(executed / elapsed, 2) if elapsed else None,
-        "invariants_ok": duplicate_claims == 0 and not dangling and capacity_violations == 0,
+        "workload_complete": completed == topics,
+        "invariants_ok": duplicate_claims == 0 and not dangling and capacity_violations == 0 and failed_stages == 0,
     }

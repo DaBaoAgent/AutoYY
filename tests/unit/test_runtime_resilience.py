@@ -276,7 +276,7 @@ def test_runtime_cli_surface(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 def test_soak_rejects_invalid_options() -> None:
     with pytest.raises(ValueError, match="topics"):
-        run_control_plane_soak(topics=100)
+        run_control_plane_soak(topics=501)
     with pytest.raises(ValueError, match="fault_rate"):
         run_control_plane_soak(topics=2, fault_rate=1.0)
 

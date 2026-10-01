@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .batch import RUNNABLE_STATUS
 from .paths import discover_topics
 from .profiling import inventory_root
+from .queue_policy import candidate_policy_score, load_queue_policy
 from .state import DEPENDENCIES, STAGES, empty_state, ensure_topic, load_state
 
 DEFAULT_STAGE_LIMITS = {
@@ -48,6 +50,7 @@ def scheduler_plan(
     active_leases: list[dict[str, Any]] | None = None,
     stage_limits: dict[str, int] | None = None,
     strategy: str = "finish-first",
+    include_inventory: bool = True,
 ) -> dict[str, Any]:
     if strategy not in STRATEGIES:
         raise ValueError(f"unknown scheduler strategy: {strategy}")
@@ -62,9 +65,11 @@ def scheduler_plan(
     except FileNotFoundError:
         state = empty_state()
     topics = discover_topics(root)
+    queue_policy = load_queue_policy(root)
     for topic in topics:
         if topic.name in active_topics:
             continue
+        persisted_record = state.get("topics", {}).get(topic.name)
         record = ensure_topic(state, topic.name)
         for stage in capabilities:
             stage_limit = max(1, int(limits.get(stage, 1)))
@@ -75,21 +80,30 @@ def scheduler_plan(
             blockers = [dep for dep in DEPENDENCIES[stage] if record["stages"][dep].get("status") != "ready"]
             if blockers or status not in RUNNABLE_STATUS:
                 continue
-            score = _priority(stage, status, strategy)
+            stage_updated_at = str(item.get("updated_at") or "")
+            if persisted_record is None:
+                stage_updated_at = datetime.fromtimestamp(topic.stat().st_mtime, UTC).isoformat()
+            policy_score = candidate_policy_score(
+                stage_updated_at=stage_updated_at,
+                topic_policy=queue_policy.get("topics", {}).get(topic.name),
+            )
+            score = _priority(stage, status, strategy) + int(policy_score["score_bonus"])
             candidates.append({
                 "topic": topic.name, "stage": stage, "status": status, "score": score,
                 "stage_active": active_by_stage[stage], "stage_limit": stage_limit,
                 "reason": str(item.get("reason") or ""),
+                **policy_score,
             })
     candidates.sort(key=lambda item: (-item["score"], item["topic"].casefold(), item["stage"]))
-    inventory = inventory_root(root)
     warnings = []
-    if inventory["legacy_candidate_count"]:
-        warnings.append({
-            "code": "LEGACY_TOPIC_NAMES_IGNORED",
-            "count": inventory["legacy_candidate_count"],
-            "examples": inventory["legacy_candidates"][:10],
-        })
+    if include_inventory:
+        inventory = inventory_root(root)
+        if inventory["legacy_candidate_count"]:
+            warnings.append({
+                "code": "LEGACY_TOPIC_NAMES_IGNORED",
+                "count": inventory["legacy_candidate_count"],
+                "examples": inventory["legacy_candidates"][:10],
+            })
     return {
         "strategy": strategy,
         "capabilities": capabilities,
@@ -99,4 +113,5 @@ def scheduler_plan(
         "next": candidates[0] if candidates else None,
         "candidates": candidates,
         "warnings": warnings,
+        "queue_policy_count": len(queue_policy.get("topics", {})),
     }

@@ -77,16 +77,22 @@ A read-only reconciliation pass over the representative real batch verified 13 a
 
 ## Control-plane soak and fault injection
 
-A deterministic 80-topic scheduler/state/lease soak used eight simulated workers with injected transient stage failures; crash injection additionally expires held leases without releasing them to model killed workers or machine restarts. It executed 561 state transitions, including 46 ordinary stage failures plus 35 simulated worker crashes, and recovered all 80 topics to complete.
+The endurance harness now supports up to 500 synthetic topics, random stage faults, simulated killed workers, and duration-bounded overnight runs. It exercises the real scheduler, lease files, state transitions, capacity limits, and crash recovery while excluding media/network/model time.
+
+A deterministic 100-topic run with eight workers, 8% stage faults, and 5% worker crashes injected 42 ordinary failures plus 40 crashes. It recovered all 100 topics with zero duplicate claims, dangling leases, capacity violations, or failed stages. Removing repeated inventory scans from the atomic claim path reduced the same seeded workload from 36.483 s (18.69 ops/s) to 27.869 s (24.47 ops/s), about 23.6% lower elapsed time.
+
+A deterministic 500-topic run with eight workers, 5% stage faults, and 2% worker crashes injected 137 ordinary failures plus 82 crashes and completed all 500 topics. Before batched same-wave state checkpoints it took 344.697 s at 9.34 ops/s. Batching each worker wave into one atomic state checkpoint reduced the same seeded workload to 203.921 s at 15.79 ops/s: about 40.8% lower elapsed time and roughly 69% higher control-plane throughput.
+
+For both completed runs:
 
 - duplicate topic claims: 0
 - dangling leases: 0
 - stage-capacity violations: 0
 - failed stages remaining: 0
-- elapsed: 32.714 s
-- control-plane throughput: about 17.15 transitions/s
+- workload complete: true
+- invariants OK: true
 
-This benchmark intentionally excludes media/network/model time. It protects the unattended orchestration control plane from deadlocks, lost work, duplicate claims, and unrecovered transient failures. CI runs a smaller deterministic soak on every push.
+CI runs a smaller deterministic soak on every push. A separate endurance workflow can run the 500-topic case or a duration-bounded long test without slowing normal pull requests.
 
 ## Regression rule
 

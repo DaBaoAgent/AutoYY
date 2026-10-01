@@ -4,7 +4,7 @@ import argparse
 import json
 import shutil
 import sys
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from . import __version__
@@ -14,10 +14,12 @@ from .deliverables import validate_root
 from .diagnostics import diagnose
 from .doctor import run_doctor
 from .download import DownloadOptions, run_download
+from .history import adaptive_resource_plan
 from .io import configure_utf8_stdio
 from .peer import load_library, pattern_stats
 from .profiling import inventory_root, profile_workload
 from .publication import validate_publication_file
+from .queue_policy import clear_topic_policy, load_queue_policy, set_topic_policy
 from .resources import resource_plan_dict
 from .runtime import RuntimeOptions, reconcile_existing, runtime_plan, runtime_run, runtime_tick
 from .scheduler import STRATEGIES, parse_capabilities, scheduler_plan
@@ -31,6 +33,7 @@ from .state import (
     set_approved,
     set_stage,
 )
+from .supervisor import request_supervisor_stop, run_supervisor, start_supervisor, supervisor_status
 from .transcribe import main as transcribe_main
 from .voiceover import (
     attest_quality_file,
@@ -117,10 +120,6 @@ def cmd_voiceover_attest(args: argparse.Namespace) -> int:
             Path(args.topic).resolve(),
             issuer=args.issuer,
             run_id=args.run_id,
-        max_command_attempts=args.max_command_attempts,
-        retry_base_seconds=args.retry_base_seconds,
-        retry_max_seconds=args.retry_max_seconds,
-        rate_limit=args.rate_limit,
         )
     except (OSError, ValueError) as exc:
         emit({"ok": False, "error": str(exc)})
@@ -386,6 +385,7 @@ def cmd_runtime_soak(args: argparse.Namespace) -> int:
         result = run_control_plane_soak(
             topics=args.topics, operations=args.operations, workers=args.workers,
             fault_rate=args.fault_rate, crash_rate=args.crash_rate, seed=args.seed,
+            duration_seconds=args.duration_seconds,
         )
     except ValueError as exc:
         emit({"ok": False, "error_code": "INVALID_SOAK_OPTIONS", "error": str(exc)}, compact=args.json)
@@ -393,6 +393,117 @@ def cmd_runtime_soak(args: argparse.Namespace) -> int:
     emit(result, compact=args.json)
     return 0 if result["invariants_ok"] else 1
 
+
+def cmd_history(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        emit({"ok": False, "error_code": "ROOT_NOT_FOUND", "error": "root does not exist"}, compact=args.json)
+        return 2
+    emit(adaptive_resource_plan(root), compact=args.json)
+    return 0
+
+
+def cmd_queue_show(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        return 2
+    payload = load_queue_policy(root)
+    result = payload["topics"].get(args.topic, {}) if args.topic else payload
+    emit(result, compact=args.json)
+    return 0
+
+
+def cmd_queue_set(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        emit({"ok": False, "error_code": "ROOT_NOT_FOUND", "error": "root does not exist"}, compact=args.json)
+        return 2
+    if not (root / args.topic).is_dir():
+        emit({"ok": False, "error_code": "TOPIC_NOT_FOUND", "error": "topic does not exist"}, compact=args.json)
+        return 2
+    if args.priority is None and not args.due_at and args.sla_minutes is None:
+        emit({"ok": False, "error": "set at least one of --priority, --due-at, or --sla-minutes"}, compact=args.json)
+        return 2
+    if args.sla_minutes is not None and args.sla_minutes <= 0:
+        emit({"ok": False, "error": "--sla-minutes must be positive"}, compact=args.json)
+        return 2
+    if args.due_at and args.sla_minutes is not None:
+        emit({"ok": False, "error": "use either --due-at or --sla-minutes"}, compact=args.json)
+        return 2
+    due_at = args.due_at
+    if args.sla_minutes is not None:
+        due_at = (datetime.now(UTC) + timedelta(minutes=args.sla_minutes)).isoformat(timespec="seconds")
+    try:
+        record = set_topic_policy(root, args.topic, priority=args.priority, due_at=due_at)
+    except ValueError as exc:
+        emit({"ok": False, "error": str(exc)}, compact=args.json)
+        return 2
+    emit({"ok": True, "topic": args.topic, "policy": record}, compact=args.json)
+    return 0
+
+
+def cmd_queue_clear(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        emit({"ok": False, "error_code": "ROOT_NOT_FOUND", "error": "root does not exist"}, compact=args.json)
+        return 2
+    emit({"ok": True, "topic": args.topic, "cleared": clear_topic_policy(root, args.topic)}, compact=args.json)
+    return 0
+
+
+def cmd_supervisor_start(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        return 2
+    try:
+        result = start_supervisor(
+            _runtime_options(args), interval_seconds=args.interval_seconds,
+            stop_when_idle=args.stop_when_idle, idle_cycles=args.idle_cycles,
+            retry_base_seconds=args.retry_base_seconds, retry_max_seconds=args.retry_max_seconds,
+            retune_every=args.retune_every,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        emit({"ok": False, "error": str(exc)}, compact=args.json)
+        return 2
+    emit(result, compact=args.json)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_supervisor_status(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        emit({"ok": False, "error_code": "ROOT_NOT_FOUND", "error": "root does not exist"}, compact=args.json)
+        return 2
+    emit(supervisor_status(root), compact=args.json)
+    return 0
+
+
+def cmd_supervisor_stop(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        emit({"ok": False, "error_code": "ROOT_NOT_FOUND", "error": "root does not exist"}, compact=args.json)
+        return 2
+    result = request_supervisor_stop(root)
+    emit(result, compact=args.json)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_supervisor_run(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        return 2
+    try:
+        code, result = run_supervisor(
+            _runtime_options(args), interval_seconds=args.interval_seconds,
+            max_cycles=args.max_cycles, stop_when_idle=args.stop_when_idle,
+            idle_cycles=args.idle_cycles, retry_base_seconds=args.retry_base_seconds,
+            retry_max_seconds=args.retry_max_seconds, retune_every=args.retune_every,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        emit({"ok": False, "error": str(exc)}, compact=args.json)
+        return 2
+    emit(result, compact=args.json)
+    return code
 
 def cmd_work_claim(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
@@ -519,7 +630,55 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_soak.add_argument("--fault-rate", type=float, default=0.05)
     runtime_soak.add_argument("--crash-rate", type=float, default=0.02)
     runtime_soak.add_argument("--seed", type=int, default=1)
+    runtime_soak.add_argument("--duration-seconds", type=float)
     runtime_soak.set_defaults(func=cmd_runtime_soak)
+
+    supervisor = sub.add_parser("supervisor")
+    supervisor_sub = supervisor.add_subparsers(dest="supervisor_command", required=True)
+    def add_supervisor_controls(target):
+        target.add_argument("--interval-seconds", type=float, default=2.0)
+        target.add_argument("--stop-when-idle", action="store_true")
+        target.add_argument("--idle-cycles", type=int, default=3)
+        target.add_argument("--retry-base-seconds", type=float, default=5.0)
+        target.add_argument("--retry-max-seconds", type=float, default=300.0)
+        target.add_argument("--retune-every", type=int, default=20)
+    supervisor_start_parser = supervisor_sub.add_parser("start")
+    add_runtime_common(supervisor_start_parser)
+    add_supervisor_controls(supervisor_start_parser)
+    supervisor_start_parser.set_defaults(func=cmd_supervisor_start)
+    supervisor_run_parser = supervisor_sub.add_parser("run")
+    add_runtime_common(supervisor_run_parser)
+    add_supervisor_controls(supervisor_run_parser)
+    supervisor_run_parser.add_argument("--max-cycles", type=int, default=0)
+    supervisor_run_parser.set_defaults(func=cmd_supervisor_run)
+    supervisor_status_parser = supervisor_sub.add_parser("status")
+    supervisor_status_parser.add_argument("root")
+    supervisor_status_parser.set_defaults(func=cmd_supervisor_status)
+    supervisor_stop_parser = supervisor_sub.add_parser("stop")
+    supervisor_stop_parser.add_argument("root")
+    supervisor_stop_parser.set_defaults(func=cmd_supervisor_stop)
+
+    history = sub.add_parser("history")
+    history.add_argument("root")
+    history.set_defaults(func=cmd_history)
+
+    queue = sub.add_parser("queue")
+    queue_sub = queue.add_subparsers(dest="queue_command", required=True)
+    queue_show = queue_sub.add_parser("show")
+    queue_show.add_argument("root")
+    queue_show.add_argument("topic", nargs="?")
+    queue_show.set_defaults(func=cmd_queue_show)
+    queue_set = queue_sub.add_parser("set")
+    queue_set.add_argument("root")
+    queue_set.add_argument("topic")
+    queue_set.add_argument("--priority", type=int)
+    queue_set.add_argument("--due-at")
+    queue_set.add_argument("--sla-minutes", type=int)
+    queue_set.set_defaults(func=cmd_queue_set)
+    queue_clear = queue_sub.add_parser("clear")
+    queue_clear.add_argument("root")
+    queue_clear.add_argument("topic")
+    queue_clear.set_defaults(func=cmd_queue_clear)
 
     profile = sub.add_parser("profile")
     profile.add_argument("root")

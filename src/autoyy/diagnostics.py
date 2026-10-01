@@ -5,9 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from .batch import batch_status
+from .history import adaptive_resource_plan
 from .observability import recent_events
 from .profiling import inventory_root
+from .scheduler import scheduler_plan
 from .state import load_state
+from .supervisor import supervisor_status
 from .work import list_leases
 
 ERROR_HINTS = {
@@ -18,6 +21,8 @@ ERROR_HINTS = {
     "ASR_TRANSCRIPTION_FAILED": "Inspect the latest topic event for backend/device/model details and retry only that topic.",
     "STATE_CONFLICT": "Retry the operation; state writes use optimistic revision protection.",
     "LEASE_EXPIRED": "Claim the topic again and keep long work alive with work heartbeat.",
+    "SUPERVISOR_INTERRUPTED": "Restart supervisor run; persisted session/state will be reconciled before continuing.",
+    "SLA_OVERDUE": "Review queue priorities/deadlines; overdue work is already receiving scheduler urgency boost.",
 }
 
 
@@ -28,6 +33,10 @@ def diagnose(root: Path, *, event_limit: int = 50) -> dict[str, Any]:
     inventory = inventory_root(root)
     status = batch_status(root)
     leases = list_leases(root)
+    supervisor = supervisor_status(root)
+    adaptive = adaptive_resource_plan(root)
+    schedule = scheduler_plan(root, active_leases=leases, include_inventory=False)
+    overdue = [item for item in schedule["candidates"] if item.get("sla_state") == "overdue"]
     failures = recent_events(root, limit=event_limit, failures_only=True)
     codes = Counter(str(item.get("code") or "UNCLASSIFIED") for item in failures)
     findings: list[dict[str, Any]] = []
@@ -43,6 +52,11 @@ def diagnose(root: Path, *, event_limit: int = 50) -> dict[str, Any]:
         findings.append({"severity": "error", "code": "BLOCKED_OR_FAILED_STAGES", "count": blocked})
     if failures:
         findings.append({"severity": "warning", "code": "RECENT_FAILURE_EVENTS", "count": len(failures)})
+    supervisor_state = supervisor.get("state") or {}
+    if supervisor_state.get("status") in {"running", "starting"} and not supervisor.get("running"):
+        findings.append({"severity": "warning", "code": "SUPERVISOR_INTERRUPTED", "hint": ERROR_HINTS["SUPERVISOR_INTERRUPTED"]})
+    if overdue:
+        findings.append({"severity": "warning", "code": "SLA_OVERDUE", "count": len(overdue), "hint": ERROR_HINTS["SLA_OVERDUE"]})
     state_error = ""
     try:
         load_state(root, create=False)
@@ -65,6 +79,9 @@ def diagnose(root: Path, *, event_limit: int = 50) -> dict[str, Any]:
             "stage_counts": status["stage_counts"],
         },
         "active_leases": leases,
+        "supervisor": supervisor,
+        "adaptive_resources": adaptive,
+        "overdue_sla_count": len(overdue),
         "recent_failure_count": len(failures),
         "failure_codes": dict(codes),
         "recent_failures": failures[-10:],
