@@ -12,7 +12,7 @@
 最终 release gate 结果：
 
 - `86 tests collected`，完整测试集通过。
-- GitHub Actions P0 hardening run `36798612582`：Python 3.11、Python 3.12、wheel-smoke 三个 job 全部通过。
+- 默认分支 `main` GitHub Actions run `36798953181`：Python 3.11、Python 3.12、wheel-smoke 三个 job 全部通过。
 - 远端 Python 3.11 / 3.12 coverage 均高于 `85%` hard gate；3.12 实测 `86.13%`。
 - Python compile、Ruff、PowerShell 5.1 语法、PowerShell 7 wrapper integration、`git diff --check` 与 fresh-wheel install smoke 均通过。
 - `strategy.fail-fast=false`，任一 Python matrix 失败不会取消另一版本的验收证据。
@@ -137,7 +137,7 @@ PowerShell 7 wrapper test       -> PASS
 fresh wheel build/install       -> PASS
 autoyy transcribe --help        -> PASS
 git diff --check                -> PASS
-GitHub Actions run 36798612582  -> 3/3 jobs SUCCESS
+GitHub Actions main 36798953181 -> 3/3 jobs SUCCESS
 ```
 ## 环境边界说明
 
@@ -153,7 +153,7 @@ GitHub CI 以 `windows-latest` + Python 3.11 / 3.12 为发布基线；本地开�
 - AutoYY 仍是 Windows-first 项目；没有宣称 Linux/macOS 全流程等价支持。
 ## 交接建议
 
-P0 hardening 已在 `fix/p0-hardening` 分支提交并推送；远端 CI 已实际通过。合入默认分支后仍必须以 `main` 的 GitHub Actions 最终结果作为发布依据，不允许仅凭本地结果或本报告宣称 release-ready。
+P0 hardening 已 fast-forward 合入并推送到默认分支 `main`；`main` 的 GitHub Actions 已实际 3/3 全绿。后续发布判断仍必须以默认分支远端 CI 为准，不允许仅凭本地结果或静态报告宣称 release-ready。
 
 推荐交接验收命令：
 
@@ -167,4 +167,4 @@ git diff --check
 git status --short
 ```
 
-结论：P0 hardening 在功能分支已通过机器验收；只有默认分支 `main` 对同一代码再次 GitHub CI 全绿后，才将 P0 标记为最终 CLOSED，并进入下一轮性能与体验优化。
+结论：P0 hardening 已在默认分支 `main` 完成远端机器验收，状态正式标记为 **CLOSED**。后续工作可进入下一轮性能与体验优化，但不得回退本报告列出的 CI、attestation、状态一致性与安装包 Gate。
