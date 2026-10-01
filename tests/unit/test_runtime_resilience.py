@@ -444,3 +444,60 @@ def test_runtime_skips_failed_subtitle_for_rest_of_same_run(
     assert result["deferred_failures"] == [("01-first", "subtitle")]
     assert calls == ["01-first", "02-second"]
     assert result["pass_limit"] == 20
+
+
+def test_resource_plan_scales_download_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(resources.os, "cpu_count", lambda: 16)
+    monkeypatch.setattr(resources, "_windows_memory_gb", lambda: 32.0)
+    monkeypatch.setattr(resources, "_nvidia_gpu", lambda: ("GPU", 24.0))
+    resources.detect_resources.cache_clear()
+    plan = resources.detect_resources()
+    assert plan.download_workers == 6
+    assert plan.asr_device == "cuda" and plan.asr_workers == 3
+    monkeypatch.setattr(resources.os, "cpu_count", lambda: 4)
+    monkeypatch.setattr(resources, "_windows_memory_gb", lambda: 6.0)
+    monkeypatch.setattr(resources, "_nvidia_gpu", lambda: (None, None))
+    resources.detect_resources.cache_clear()
+    plan = resources.detect_resources()
+    assert plan.download_workers == 2
+    assert plan.package_workers == 2
+    resources.detect_resources.cache_clear()
+
+
+def test_nvidia_gpu_parsing_and_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(resources.shutil, "which", lambda _name: "nvidia-smi")
+    monkeypatch.setattr(resources.subprocess, "run", lambda *_a, **_k: subprocess.CompletedProcess([], 0, "RTX 4090, 24564\n", ""))
+    assert resources._nvidia_gpu() == ("RTX 4090", 23.99)
+    monkeypatch.setattr(resources.subprocess, "run", lambda *_a, **_k: subprocess.CompletedProcess([], 1, "", "bad"))
+    assert resources._nvidia_gpu() == (None, None)
+
+
+def test_retry_classification_covers_timeout_5xx_and_io() -> None:
+    assert classify_failure(stderr="network timeout") == "NETWORK_TIMEOUT"
+    assert classify_failure(stderr="process timeout") == "PROCESS_TIMEOUT"
+    assert classify_failure(stderr="HTTP Error 503 Service Unavailable") == "REMOTE_5XX"
+    assert classify_failure(error=OSError("temporary disk issue")) == "TEMPORARY_IO"
+    assert not is_retryable("AUTH_REQUIRED")
+
+
+def test_runtime_package_requires_ffprobe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import autoyy.runtime as runtime_module
+    from autoyy.state import update_state
+
+    make_project(tmp_path, source="ready", subtitle="ready", voiceover="ready")
+    update_state(tmp_path, lambda state: set_stage(state, "01-topic", "publication", "ready", fingerprint="pub"), create=True)
+    update_state(tmp_path, lambda state: set_stage(state, "01-topic", "cover", "ready", fingerprint="cover"), create=True)
+    monkeypatch.setattr(runtime_module, "_ffprobe", lambda _options: None)
+    code, result = runtime_tick(RuntimeOptions(tmp_path, allow_legacy_ignored=True), reconcile=False)
+    assert code == 2
+    assert result["action"]["error_code"] == "FFPROBE_NOT_FOUND"
+
+
+def test_runtime_dry_run_does_not_advance_state(tmp_path: Path) -> None:
+    from autoyy.runtime import runtime_run
+
+    make_project(tmp_path, source="ready", subtitle="ready", voiceover="pending")
+    before = load_state(tmp_path)["revision"]
+    code, result = runtime_run(RuntimeOptions(tmp_path, allow_legacy_ignored=True, dry_run=True))
+    assert code == 0 and result["status"] == "planned"
+    assert load_state(tmp_path)["revision"] == before
