@@ -87,13 +87,11 @@ Report complete and incomplete counts, missing items, blocked reasons, subtitle 
 
 ## Deterministic batch voiceover gate
 
-For batches of two or more topics, the writer stage is serialized per topic by default. Each topic gets an isolated source context and must complete its own source read, candidate, Humanizer pass, fact check, reviewer, and machine gate.
+For batches of two or more topics, run `autoyy batch plan <project-root> voiceover` and claim work through `autoyy work claim`. The lease layer machine-enforces one active topic per worker and prevents two workers from claiming the same topic. Each topic gets an isolated source context and must complete its own source read, candidate, Humanizer pass, fact check, reviewer, and machine gate.
 
-The writer creates `爆款口播稿.candidate.txt`. The final `爆款口播稿.txt` is created only by `python -m autoyy voiceover promote <topic-folder>` after `<topic>/.autoyy/voiceover-quality.json` matches the current SRT/script hashes and every required gate passes.
+The writer creates `爆款口播稿.candidate.txt` and binds `voiceover scaffold` to the active lease token. Long-running work refreshes the lease with `autoyy work heartbeat`, and the lease is released before the worker claims another topic. The final `爆款口播稿.txt` is created only by `python -m autoyy voiceover promote <topic-folder>` after `<topic>/.autoyy/voiceover-quality.json` matches the current SRT/script hashes and every required gate passes. The structured record must bind current source/script SHA-256 values and include `srt_full_read=true`, `attempt=1..3`, `humanizer.mode=embedded`, an independent reviewer, fact/reviewer coverage counts, and distributed evidence anchors. External supplemental facts require `source_kind=verified_source`, `source_ref`, and `verified_at`.
 
-The structured record must bind current source/script SHA-256 values and include `srt_full_read=true`, `attempt=1..3`, `humanizer.mode=embedded`, an independent reviewer, fact/reviewer coverage counts, and distributed evidence anchors. External supplemental facts require `source_kind=verified_source`, `source_ref`, and `verified_at`.
-
-After all topics, run `python -m autoyy voiceover validate <project-root>`. Every topic must report complete. A partial batch returns exit code 1 and may only be described as incomplete/blocked.
+After all topics, run `python -m autoyy voiceover validate <project-root> --workers 4`. Every topic must report complete. A partial batch returns exit code 1 and may only be described as incomplete/blocked.
 
 ## Project state
 

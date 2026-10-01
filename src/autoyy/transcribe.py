@@ -12,7 +12,8 @@ from .manifest import load_manifest
 from .media import find_primary_subtitle, find_primary_video
 from .paths import discover_topics, safe_child_path
 from .result import EXIT_FAILED, EXIT_OK, EXIT_USAGE
-from .state import file_fingerprint, load_state, recover_running, save_state, set_stage
+from .state import file_fingerprint, recover_running, set_stage, update_state
+from .subtitles import validate_srt
 
 _BACKEND_CACHE: dict[str, object] = {}
 
@@ -54,28 +55,44 @@ def write_srt_atomic(path: Path, segments: list[tuple[float, float, str]]) -> No
     os.replace(tmp, path)
 
 
-def resolve_backend(name: str) -> str:
-    if name == "funasr":
-        try:
-            import funasr  # noqa: F401
-        except ImportError as exc:
-            raise RuntimeError("FunASR unavailable; install .[asr-funasr]") from exc
-        return "funasr"
-    if name == "whisper":
-        try:
-            import faster_whisper  # noqa: F401
-        except ImportError as exc:
-            raise RuntimeError("faster-whisper unavailable; install .[asr-whisper]") from exc
-        return "whisper"
+def normalize_language(value: str | None) -> str | None:
+    normalized = (value or "").strip().lower().replace("_", "-")
+    if normalized in {"", "auto", "und", "unknown"}:
+        return None
+    if normalized.startswith("zh"):
+        return "zh"
+    return normalized.split("-", 1)[0]
+
+
+def backend_preference(language: str | None) -> tuple[str, str]:
+    return ("funasr", "whisper") if language == "zh" else ("whisper", "funasr")
+
+
+def _backend_available(name: str) -> bool:
     try:
-        import funasr  # noqa: F401
-        return "funasr"
-    except ImportError:
-        try:
+        if name == "funasr":
+            import funasr  # noqa: F401
+        else:
             import faster_whisper  # noqa: F401
-            return "whisper"
-        except ImportError as exc:
-            raise RuntimeError("No ASR backend; install .[asr-funasr] or .[asr-whisper]") from exc
+    except ImportError:
+        return False
+    return True
+
+
+def resolve_backend(name: str, language: str | None = None) -> str:
+    if name in {"funasr", "whisper"}:
+        if not _backend_available(name):
+            extra = "asr-funasr" if name == "funasr" else "asr-whisper"
+            raise RuntimeError(f"{name} unavailable; install .[{extra}]")
+        if name == "funasr" and language not in {None, "zh"}:
+            raise RuntimeError(f"FunASR paraformer-zh cannot transcribe source language: {language}")
+        return name
+    for candidate in backend_preference(language):
+        if candidate == "funasr" and language not in {None, "zh"}:
+            continue
+        if _backend_available(candidate):
+            return candidate
+    raise RuntimeError("No compatible ASR backend; install .[asr-whisper] or .[asr-funasr]")
 
 
 def resolve_ffmpeg(location: str | None) -> str | None:
@@ -101,7 +118,7 @@ def extract_audio(video: Path, wav_path: Path, ffmpeg: str, timeout: int) -> Non
 def transcribe_whisper(
     wav_path: Path,
     model_size: str,
-    language: str,
+    language: str | None,
     device: str,
     vad: bool,
     beam_size: int,
@@ -149,20 +166,33 @@ def transcribe_funasr(wav_path: Path, device: str) -> list[tuple[float, float, s
     return out
 
 
-def process_folder(folder: Path, args: argparse.Namespace, backend: str, ffmpeg: str | None) -> dict[str, object]:
+def process_folder(folder: Path, args: argparse.Namespace, backend_name: str, ffmpeg: str | None, language: str | None = None) -> dict[str, object]:
     if not folder.is_dir():
         return {"folder": folder.name, "status": "failed", "reason": "topic_directory_missing"}
     video = find_primary_video(folder)
     if video is None:
         return {"folder": folder.name, "status": "failed", "reason": "video_missing"}
     existing = find_primary_subtitle(folder)
+    invalid_existing: Path | None = None
     if existing is not None and not args.overwrite:
-        return {"folder": folder.name, "status": "ready", "reason": "subtitle_exists", "subtitle": existing.name}
+        if validate_srt(existing)["valid"]:
+            return {"folder": folder.name, "status": "ready", "reason": "subtitle_exists", "subtitle": existing.name}
+        if args.dry_run:
+            return {"folder": folder.name, "status": "pending", "reason": "invalid_subtitle_repair"}
+        invalid_existing = existing
     if args.dry_run:
         return {"folder": folder.name, "status": "pending", "reason": "dry_run"}
     if not ffmpeg:
         return {"folder": folder.name, "status": "failed", "reason": "ffmpeg_missing"}
     try:
+        backend = resolve_backend(backend_name, language)
+        if invalid_existing is not None:
+            invalid_target = invalid_existing.with_name(invalid_existing.name + ".invalid")
+            counter = 1
+            while invalid_target.exists():
+                invalid_target = invalid_existing.with_name(invalid_existing.name + f".invalid-{counter}")
+                counter += 1
+            invalid_existing.replace(invalid_target)
         with tempfile.TemporaryDirectory(prefix="autoyy-asr-") as tmp:
             wav = Path(tmp) / "audio.wav"
             extract_audio(video, wav, ffmpeg, args.ffmpeg_timeout)
@@ -170,15 +200,17 @@ def process_folder(folder: Path, args: argparse.Namespace, backend: str, ffmpeg:
                 segments = transcribe_funasr(wav, args.device)
             else:
                 segments = transcribe_whisper(
-                    wav,
-                    args.model_size,
-                    args.language,
-                    args.device,
-                    args.vad,
-                    args.beam_size,
+                    wav, args.model_size, language, args.device, args.vad, args.beam_size
                 )
-            write_srt_atomic(folder / "字幕.srt", segments)
-            return {"folder": folder.name, "status": "ready", "reason": "transcribed", "segments": len(segments)}
+            target = folder / "字幕.srt"
+            write_srt_atomic(target, segments)
+            report = validate_srt(target)
+            if not report["valid"]:
+                raise RuntimeError("generated subtitle failed SRT validation: " + "; ".join(report["issues"][:3]))
+            return {
+                "folder": folder.name, "status": "ready", "reason": "transcribed",
+                "segments": len(segments), "backend": backend, "language": language or "auto",
+            }
     except OSError as exc:
         return {"folder": folder.name, "status": "failed", "reason": "disk_or_file_error", "error": str(exc)[:300]}
     except Exception as exc:  # noqa: BLE001
@@ -191,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--backend", choices=["auto", "funasr", "whisper"], default="auto")
     parser.add_argument("--model-size", default="medium")
-    parser.add_argument("--language", default="zh")
+    parser.add_argument("--language", default="auto")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--ffmpeg-location")
     parser.add_argument("--ffmpeg-timeout", type=int, default=7200)
@@ -214,10 +246,15 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
     if args.hf_endpoint:
         os.environ["HF_ENDPOINT"] = args.hf_endpoint
+    language_by_folder: dict[str, str | None] = {}
     try:
         if args.manifest:
             rows = load_manifest(args.manifest, output_root=root)
             folders = [safe_child_path(root, row.folder_name) for row in rows]
+            language_by_folder = {
+                row.folder_name: normalize_language(row.data.get("source_language"))
+                for row in rows
+            }
         else:
             folders = discover_topics(root)
     except (OSError, ValueError) as exc:
@@ -227,15 +264,23 @@ def main(argv: list[str] | None = None) -> int:
         print("No topic directories found")
         return EXIT_USAGE
 
-    needs_backend = any(
-        folder.is_dir()
-        and find_primary_video(folder) is not None
-        and (find_primary_subtitle(folder) is None or args.overwrite)
-        for folder in folders
-    )
+    def needs_transcription(folder: Path) -> bool:
+        if not folder.is_dir() or find_primary_video(folder) is None:
+            return False
+        subtitle = find_primary_subtitle(folder)
+        return args.overwrite or subtitle is None or not validate_srt(subtitle)["valid"]
+
+    needs_backend = any(needs_transcription(folder) for folder in folders)
+    default_language = normalize_language(args.language)
 
     if args.dry_run:
-        results = [process_folder(folder, args, "dry-run", None) for folder in folders]
+        results = [
+            process_folder(
+                folder, args, args.backend, None,
+                language_by_folder.get(folder.name) or default_language,
+            )
+            for folder in folders
+        ]
         for item in results:
             print(f"{item['status']:8s} {item['folder']} {item['reason']}")
         failed = sum(item["status"] == "failed" for item in results)
@@ -246,52 +291,48 @@ def main(argv: list[str] | None = None) -> int:
     if needs_backend and not ffmpeg:
         print("ffmpeg not found; use --ffmpeg-location")
         return EXIT_USAGE
+    if needs_backend:
+        if args.backend != "auto" and not _backend_available(args.backend):
+            print(f"{args.backend} unavailable; install the matching ASR extra")
+            return EXIT_USAGE
+        if args.backend == "auto" and not (_backend_available("whisper") or _backend_available("funasr")):
+            print("No ASR backend; install .[asr-whisper] or .[asr-funasr]")
+            return EXIT_USAGE
     try:
-        backend = resolve_backend(args.backend) if needs_backend else args.backend
-    except RuntimeError as exc:
-        print(str(exc))
-        return EXIT_USAGE
-
-    try:
-        state = load_state(root, create=True)
-        recover_running(state)
+        update_state(root, lambda state: recover_running(state), create=True)
     except (OSError, ValueError) as exc:
         print(str(exc))
         return EXIT_USAGE
 
     results: list[dict[str, object]] = []
     for folder in folders:
-        result = process_folder(folder, args, backend, ffmpeg)
+        language = language_by_folder.get(folder.name) or default_language
+        result = process_folder(folder, args, args.backend, ffmpeg, language)
         results.append(result)
         video = find_primary_video(folder) if folder.is_dir() else None
         subtitle = find_primary_subtitle(folder) if folder.is_dir() else None
-        if video:
-            set_stage(state, folder.name, "source", "ready", fingerprint=file_fingerprint(video))
-        if subtitle and result["status"] == "ready":
-            set_stage(state, folder.name, "subtitle", "ready", fingerprint=file_fingerprint(subtitle))
-        elif result["status"] == "failed":
-            set_stage(
-                state,
-                folder.name,
-                "subtitle",
-                "failed",
-                fingerprint="missing",
-                reason=str(result.get("reason", "transcription_failed")),
-            )
-        else:
-            set_stage(
-                state,
-                folder.name,
-                "subtitle",
-                "blocked",
-                fingerprint="missing",
-                reason=str(result.get("reason", "subtitle unavailable")),
-            )
-    try:
-        save_state(root, state)
-    except OSError as exc:
-        print(str(exc))
-        return EXIT_USAGE
+
+        def apply_result(state, *, folder=folder, result=result, video=video, subtitle=subtitle):
+            if video:
+                set_stage(state, folder.name, "source", "ready", fingerprint=file_fingerprint(video))
+            if subtitle and result["status"] == "ready":
+                set_stage(state, folder.name, "subtitle", "ready", fingerprint=file_fingerprint(subtitle))
+            elif result["status"] == "failed":
+                set_stage(
+                    state, folder.name, "subtitle", "failed", fingerprint="missing",
+                    reason=str(result.get("reason", "transcription_failed")),
+                )
+            else:
+                set_stage(
+                    state, folder.name, "subtitle", "blocked", fingerprint="missing",
+                    reason=str(result.get("reason", "subtitle unavailable")),
+                )
+
+        try:
+            update_state(root, apply_result, create=True)
+        except OSError as exc:
+            print(str(exc))
+            return EXIT_USAGE
     for item in results:
         print(f"{item['status']:8s} {item['folder']} {item['reason']}")
     failed = sum(item["status"] != "ready" for item in results)

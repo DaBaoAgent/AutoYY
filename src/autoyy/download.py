@@ -13,7 +13,7 @@ from pathlib import Path
 from .manifest import ManifestRow, is_supported_youtube_url, load_manifest
 from .media import find_primary_subtitle, find_primary_video, probe_media
 from .paths import safe_child_path
-from .state import file_fingerprint, load_state, recover_running, save_state, set_stage
+from .state import file_fingerprint, recover_running, set_stage, update_state
 from .subtitles import validate_srt
 
 
@@ -254,6 +254,32 @@ def _write_status(path: Path, results: list[dict[str, object]]) -> None:
     os.replace(tmp, path)
 
 
+def _apply_result_state(state: dict, options: DownloadOptions, item: dict[str, object]) -> None:
+    topic_dir = safe_child_path(options.output_root, str(item.get("folder_name", "")))
+    video = find_primary_video(topic_dir) if topic_dir.is_dir() else None
+    subtitle = find_primary_subtitle(topic_dir) if topic_dir.is_dir() else None
+    complete = item.get("status") in {"complete", "ready(skip)"}
+    video_ready = item.get("video") is True and complete
+    subtitle_ready = item.get("subtitle") is True and complete
+    error = str(item.get("error", ""))
+    set_stage(
+        state, topic_dir.name, "source", "ready" if video_ready else "failed",
+        fingerprint=file_fingerprint(video) if video_ready and video else "missing",
+        reason="" if video_ready else (error or "source verification failed"),
+    )
+    set_stage(
+        state, topic_dir.name, "subtitle", "ready" if subtitle_ready else "failed",
+        fingerprint=file_fingerprint(subtitle) if subtitle_ready and subtitle else "missing",
+        reason="" if subtitle_ready else (error or "subtitle verification failed"),
+    )
+
+
+def _checkpoint_result(options: DownloadOptions, results: list[dict[str, object]], item: dict[str, object]) -> None:
+    results.append(item)
+    update_state(options.output_root, lambda state: _apply_result_state(state, options, item), create=True)
+    _write_status(options.output_root / "下载状态.csv", sorted(results, key=lambda row: str(row.get("folder_name", ""))))
+
+
 def run_download(options: DownloadOptions) -> tuple[int, dict[str, object]]:
     options.output_root = options.output_root.resolve()
     try:
@@ -281,8 +307,7 @@ def run_download(options: DownloadOptions) -> tuple[int, dict[str, object]]:
         return 0, {"valid": True, "planned": len(plans), "results": plans}
     options.output_root.mkdir(parents=True, exist_ok=True)
     try:
-        state = load_state(options.output_root, create=True)
-        recover_running(state)
+        update_state(options.output_root, lambda state: recover_running(state), create=True)
     except (OSError, ValueError) as exc:
         return 2, {"valid": False, "error": str(exc), "results": []}
     ffprobe = _ffprobe_path(options.ffmpeg_location)
@@ -293,12 +318,12 @@ def run_download(options: DownloadOptions) -> tuple[int, dict[str, object]]:
     try:
         if options.parallel <= 1:
             for row in rows:
-                results.append(process_row(row, options, yt_dlp, ffprobe))
+                _checkpoint_result(options, results, process_row(row, options, yt_dlp, ffprobe))
         else:
             with ThreadPoolExecutor(max_workers=min(options.parallel, 8), thread_name_prefix="autoyy-download") as pool:
                 futures = {pool.submit(process_row, row, options, yt_dlp, ffprobe): row.folder_name for row in rows}
                 for future in as_completed(futures):
-                    results.append(future.result())
+                    _checkpoint_result(options, results, future.result())
     except KeyboardInterrupt:
         interrupted = True
     finally:
@@ -307,15 +332,6 @@ def run_download(options: DownloadOptions) -> tuple[int, dict[str, object]]:
     failed = sum(item.get("status") not in {"complete", "ready(skip)"} for item in results)
     if interrupted:
         failed += 1
-    for item in results:
-        topic_dir = safe_child_path(options.output_root, str(item.get("folder_name", "")))
-        video = find_primary_video(topic_dir) if topic_dir.is_dir() else None
-        subtitle = find_primary_subtitle(topic_dir) if topic_dir.is_dir() else None
-        video_ready = item.get("video") is True and item.get("status") in {"complete", "ready(skip)"}
-        subtitle_ready = item.get("subtitle") is True and item.get("status") in {"complete", "ready(skip)"}
-        set_stage(state, topic_dir.name, "source", "ready" if video_ready else "failed", fingerprint=file_fingerprint(video) if video_ready and video else "missing", reason="" if video_ready else str(item.get("error", "source verification failed")))
-        set_stage(state, topic_dir.name, "subtitle", "ready" if subtitle_ready else "failed", fingerprint=file_fingerprint(subtitle) if subtitle_ready and subtitle else "missing", reason="" if subtitle_ready else str(item.get("error", "subtitle verification failed")))
-    save_state(options.output_root, state)
     summary = {
         "valid": failed == 0 and len(results) == len(rows),
         "topic_count": len(rows),

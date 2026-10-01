@@ -36,10 +36,13 @@ For Codex Skill installation, clone or junction the repository into the Codex sk
 
 ```powershell
 python -m autoyy doctor
-python -m autoyy validate <project-root>
+python -m autoyy validate <project-root> --workers 4
+python -m autoyy batch status <project-root>
+python -m autoyy batch plan <project-root> voiceover
+python -m autoyy work claim <project-root> --worker-id <run-id> --stage voiceover
 python -m autoyy publication validate <project-root>
-python -m autoyy voiceover scaffold <topic-folder>
-python -m autoyy voiceover validate <project-root>
+python -m autoyy voiceover scaffold <topic-folder> --lease-token <token>
+python -m autoyy voiceover validate <project-root> --workers 4
 python -m autoyy voiceover promote <topic-folder>
 python -m autoyy peer patterns --platform douyin
 python -m autoyy state show <project-root>
@@ -47,23 +50,24 @@ python -m autoyy state approve <project-root> <topic> voiceover --reason "review
 python -m autoyy state force <project-root> <topic> <stage> --reason "rerun requested"
 ```
 
-The compatibility scripts under `scripts/` remain available for existing automation. Exit-code contract is `0=success`, `1=work completed with failed/incomplete items`, and `2=invalid input, missing required dependency, or unusable state/schema`.
+`--json` may be placed before or after the subcommand for agent-friendly compact output. The compatibility scripts under `scripts/` remain available for existing automation. Exit-code contract is `0=success`, `1=work completed with failed/incomplete items`, and `2=invalid input, missing required dependency, or unusable state/schema`.
 
 ## Batch voiceover quality contract
 
-For two or more topics, the writer stage uses one topic per worker/context by default. Do not concatenate several SRTs into one prompt and generate several final scripts in one call.
+For two or more topics, one topic per worker/context is now a machine-enforced lease workflow, not just a prompt convention. Run `autoyy batch plan`, then `autoyy work claim`; a worker with an active lease receives the same topic again instead of consuming another directory. Do not concatenate several SRTs into one prompt.
 
 Per topic:
 
 Quality records use `attempt=1..3`, `humanizer.mode=embedded`, `reviewer.independent=true`, and fact/reviewer coverage counts. A third failed attempt becomes `blocked_quality` rather than triggering an unlimited rewrite loop.
 
-1. Read the full `字幕.srt`; summaries are navigation aids only.
-2. Write `爆款口播稿.candidate.txt`, not the final filename.
-3. Run the bundled `vendor/blader-humanizer/SKILL.md` in Embedded mode on that candidate.
-4. Run source-grounded fact verification and an independent semantic reviewer.
-5. Create/update `.autoyy/voiceover-quality.json` with the current source/script SHA-256 values, `srt_full_read=true`, Humanizer/fact/reviewer pass state, and evidence entries containing both `source_text` and the corresponding `script_excerpt`.
-6. Run `python -m autoyy voiceover promote <topic-folder>`.
-7. After all topics, run `python -m autoyy voiceover validate <project-root>`.
+1. Claim exactly one topic with `python -m autoyy work claim <root> --worker-id <run-id> --stage voiceover`; keep the returned lease token alive with `work heartbeat` during long runs.
+2. Read that topic's full `字幕.srt`; summaries are navigation aids only.
+3. Write `爆款口播稿.candidate.txt`, not the final filename, then create the quality scaffold with the matching `--lease-token`.
+4. Run the bundled `vendor/blader-humanizer/SKILL.md` in Embedded mode on that candidate.
+5. Run source-grounded fact verification and an independent semantic reviewer.
+6. Create/update `.autoyy/voiceover-quality.json` with the current source/script SHA-256 values, `srt_full_read=true`, Humanizer/fact/reviewer pass state, and evidence entries containing both `source_text` and the corresponding `script_excerpt`.
+7. Run `python -m autoyy voiceover promote <topic-folder>`.
+8. Release the lease only after the topic has been submitted/reviewed, then claim the next topic. After all topics, run `python -m autoyy voiceover validate <project-root> --workers 4`.
 
 The gate enforces 4,500–5,500 non-whitespace characters by default, at least five source-backed direct quotations, source-backed numeric claims, evidence-anchor coverage, banned AI/template-pattern checks, duplicate-paragraph checks, and cross-topic copy/template detection. One failed topic makes the batch `INCOMPLETE` and returns exit code 1. Verified supplemental facts outside the SRT must be recorded as `source_kind=verified_source` evidence with a source reference and verification date.
 

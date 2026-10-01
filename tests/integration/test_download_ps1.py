@@ -107,7 +107,7 @@ def test_powershell_wrapper_parallel_exit_semantics(tmp_path: Path) -> None:
         powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(REPO / "scripts" / "download_from_manifest.ps1"),
         "-Manifest", str(manifest), "-OutputRoot", str(output), "-YtDlp", str(ytdlp), "-Parallel", "2",
     ]
-    proc = subprocess.run(command, cwd=REPO, env=env, capture_output=True, text=True, check=False)
+    proc = subprocess.run(command, cwd=REPO, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (output / "下载状态.csv").is_file()
 

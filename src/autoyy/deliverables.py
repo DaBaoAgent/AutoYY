@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import struct
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .media import find_primary_subtitle, find_primary_video, probe_media
@@ -112,13 +113,22 @@ def validate_topic(folder: Path, *, require_quality: bool = True, ffprobe: str |
     }
 
 
-def validate_root(root: Path, *, allow_empty: bool = False, expected_count: int | None = None, require_quality: bool = True, ffprobe: str | None = None) -> dict:
+def validate_root(root: Path, *, allow_empty: bool = False, expected_count: int | None = None, require_quality: bool = True, ffprobe: str | None = None, workers: int = 1) -> dict:
     folders = sorted(p for p in root.iterdir() if p.is_dir() and p.name[:2].isdigit() and p.name[2:3] == "-")
     if not folders and not allow_empty:
         return {"valid": False, "topic_count": 0, "complete_count": 0, "incomplete_count": 0, "issues": ["no topic directories"], "results": []}
     if expected_count is not None and len(folders) != expected_count:
         return {"valid": False, "topic_count": len(folders), "complete_count": 0, "incomplete_count": len(folders), "issues": [f"topic count {len(folders)}, expected {expected_count}"], "results": []}
-    results = [validate_topic(folder, require_quality=require_quality, ffprobe=ffprobe) for folder in folders]
+    if workers < 1 or workers > 16:
+        raise ValueError("workers must be between 1 and 16")
+    if workers == 1:
+        results = [validate_topic(folder, require_quality=require_quality, ffprobe=ffprobe) for folder in folders]
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="autoyy-package") as pool:
+            results = list(pool.map(
+                lambda folder: validate_topic(folder, require_quality=require_quality, ffprobe=ffprobe),
+                folders,
+            ))
     incomplete = sum(not item["complete"] for item in results)
     return {
         "valid": incomplete == 0,

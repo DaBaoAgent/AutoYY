@@ -5,6 +5,9 @@ import json
 import re
 import shutil
 import uuid
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -64,7 +67,7 @@ def load_quality(topic: Path) -> dict:
         return {}
 
 
-def create_quality_template(topic: Path, script_path: Path | None = None, *, voice_profile: str = "default") -> Path:
+def create_quality_template(topic: Path, script_path: Path | None = None, *, voice_profile: str = "default", writer_lease_token: str | None = None, writer_id: str | None = None) -> Path:
     if voice_profile not in {"default", "laorou"}:
         raise ValueError(f"unsupported voice_profile: {voice_profile}")
     subtitle = topic / "字幕.srt"
@@ -80,7 +83,7 @@ def create_quality_template(topic: Path, script_path: Path | None = None, *, voi
         "srt_full_read": False,
         "voice_profile": voice_profile,
         "attempt": 1,
-        "writer": {"run_id": str(uuid.uuid4())},
+        "writer": {"run_id": writer_id or str(uuid.uuid4()), "lease_token": writer_lease_token or ""},
         "humanizer": {"pass": False, "mode": "embedded", "script_sha256": script_hash},
         "fact_check": {
             "pass": False,
@@ -280,52 +283,217 @@ def validate_voiceover(
     }
 
 
-def _pair_copy_issues(a: str, b: str) -> tuple[list[str], float]:
-    na, nb = normalized_text(a), normalized_text(b)
-    if not na or not nb:
+@dataclass(frozen=True, slots=True)
+class _ParagraphProfile:
+    text: str
+    qgrams: dict[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _CopyProfile:
+    normalized: str
+    head: str
+    tail: str
+    paragraphs: tuple[_ParagraphProfile, ...]
+    shingles: frozenset[int]
+
+
+def _paragraph_profile(text: str, *, q: int = 4) -> _ParagraphProfile:
+    qgrams = Counter(
+        hash(text[index:index + q])
+        for index in range(max(0, len(text) - q + 1))
+    )
+    return _ParagraphProfile(text=text, qgrams=dict(qgrams))
+
+
+def _copy_profile(text: str, *, shingle_size: int = 8) -> _CopyProfile:
+    normalized = normalized_text(text)
+    paragraphs = tuple(
+        _paragraph_profile(value)
+        for part in re.split(r"\r?\n\s*\r?\n", text)
+        if len(value := normalized_text(part)) >= 80
+    )
+    shingles = frozenset(
+        hash(normalized[index:index + shingle_size])
+        for index in range(max(0, len(normalized) - shingle_size + 1))
+    )
+    return _CopyProfile(
+        normalized=normalized,
+        head=normalized[:200],
+        tail=normalized[-200:],
+        paragraphs=paragraphs,
+        shingles=shingles,
+    )
+
+
+def _edge_copy_issues(left: _CopyProfile, right: _CopyProfile) -> list[str]:
+    issues: list[str] = []
+    if min(len(left.head), len(right.head)) >= 100:
+        matcher = SequenceMatcher(None, left.head, right.head, autojunk=False)
+        if matcher.quick_ratio() > 0.72 and matcher.ratio() > 0.72:
+            issues.append("opening similarity > 0.72")
+    if min(len(left.tail), len(right.tail)) >= 100:
+        matcher = SequenceMatcher(None, left.tail, right.tail, autojunk=False)
+        if matcher.quick_ratio() > 0.72 and matcher.ratio() > 0.72:
+            issues.append("ending similarity > 0.72")
+    return issues
+
+
+def _body_block_issues(left: _CopyProfile, right: _CopyProfile) -> tuple[list[str], float]:
+    if not left.normalized or not right.normalized:
         return [], 0.0
-    matcher = SequenceMatcher(None, na, nb, autojunk=False)
+    matcher = SequenceMatcher(None, left.normalized, right.normalized, autojunk=False)
     blocks = [block for block in matcher.get_matching_blocks() if block.size >= 30]
     longest = max((block.size for block in blocks), default=0)
     shared = sum(block.size for block in blocks)
-    ratio = shared / min(len(na), len(nb))
+    ratio = shared / min(len(left.normalized), len(right.normalized))
     issues: list[str] = []
     if longest >= 80:
         issues.append(f"shared contiguous block {longest} chars >= 80")
     if ratio > 0.08:
         issues.append(f"shared matching-block ratio {ratio:.3f} > 0.08")
-    head_a, head_b = na[:200], nb[:200]
-    tail_a, tail_b = na[-200:], nb[-200:]
-    if min(len(head_a), len(head_b)) >= 100 and SequenceMatcher(None, head_a, head_b, autojunk=False).ratio() > 0.72:
-        issues.append("opening similarity > 0.72")
-    if min(len(tail_a), len(tail_b)) >= 100 and SequenceMatcher(None, tail_a, tail_b, autojunk=False).ratio() > 0.72:
-        issues.append("ending similarity > 0.72")
-    paras_a = [normalized_text(p) for p in re.split(r"\r?\n\s*\r?\n", a) if len(normalized_text(p)) >= 80]
-    paras_b = [normalized_text(p) for p in re.split(r"\r?\n\s*\r?\n", b) if len(normalized_text(p)) >= 80]
-    for pa in paras_a:
-        if any(SequenceMatcher(None, pa, pb, autojunk=False).ratio() >= 0.88 for pb in paras_b):
-            issues.append("paragraph similarity >= 0.88")
-            break
     return issues, ratio
 
 
+def _paragraph_similarity_upper(
+    left: _ParagraphProfile, right: _ParagraphProfile, *, q_overlap: int | None = None
+) -> float:
+    if not left.text or not right.text:
+        return 0.0
+    # For q=4, each matching block contributes at most 3 characters beyond
+    # its shared 4-grams. Matching blocks are separated by at least one
+    # unmatched position, giving a safe upper bound on SequenceMatcher.ratio().
+    total = len(left.text) + len(right.text)
+    if q_overlap is None:
+        smaller, larger = (
+            (left.qgrams, right.qgrams)
+            if len(left.qgrams) <= len(right.qgrams)
+            else (right.qgrams, left.qgrams)
+        )
+        q_overlap = sum(
+            min(count, larger.get(gram, 0)) for gram, count in smaller.items()
+        )
+    return min(1.0, (6.0 * total + 6.0 + 2.0 * q_overlap) / (7.0 * total))
+
+
+def _paragraph_copy_issues(left: _CopyProfile, right: _CopyProfile) -> list[str]:
+    for left_paragraph in left.paragraphs:
+        for right_paragraph in right.paragraphs:
+            if _paragraph_similarity_upper(left_paragraph, right_paragraph) < 0.88:
+                continue
+            if SequenceMatcher(
+                None, left_paragraph.text, right_paragraph.text, autojunk=False
+            ).ratio() >= 0.88:
+                return ["paragraph similarity >= 0.88"]
+    return []
+
+
+def _pair_copy_issues(a: str, b: str) -> tuple[list[str], float]:
+    left = _copy_profile(a)
+    right = _copy_profile(b)
+    issues = _edge_copy_issues(left, right)
+    ratio = 0.0
+    if not left.shingles.isdisjoint(right.shingles):
+        body_issues, ratio = _body_block_issues(left, right)
+        issues.extend(body_issues)
+    issues.extend(_paragraph_copy_issues(left, right))
+    return issues, ratio
+
+
+def _body_candidate_pairs(profiles: dict[str, _CopyProfile]) -> set[tuple[str, str]]:
+    index: dict[int, list[str]] = {}
+    pairs: set[tuple[str, str]] = set()
+    for name in sorted(profiles):
+        for shingle in profiles[name].shingles:
+            bucket = index.setdefault(shingle, [])
+            for other in bucket:
+                pairs.add((other, name))
+            bucket.append(name)
+    return pairs
+
+
+def _paragraph_candidate_map(
+    profiles: dict[str, _CopyProfile],
+) -> dict[tuple[str, str], list[tuple[int, int]]]:
+    postings: dict[int, list[tuple[str, int, int]]] = {}
+    for name, profile in profiles.items():
+        for paragraph_index, paragraph in enumerate(profile.paragraphs):
+            for gram, count in paragraph.qgrams.items():
+                postings.setdefault(gram, []).append((name, paragraph_index, count))
+
+    overlaps: dict[tuple[str, int, str, int], int] = {}
+    for posting in postings.values():
+        for left_index, left_item in enumerate(posting):
+            left_name, left_paragraph, left_count = left_item
+            for right_name, right_paragraph, right_count in posting[left_index + 1:]:
+                if left_name == right_name:
+                    continue
+                if left_name < right_name:
+                    key = (left_name, left_paragraph, right_name, right_paragraph)
+                else:
+                    key = (right_name, right_paragraph, left_name, left_paragraph)
+                overlaps[key] = overlaps.get(key, 0) + min(left_count, right_count)
+
+    candidates: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    for (left_name, left_index, right_name, right_index), q_overlap in overlaps.items():
+        left = profiles[left_name].paragraphs[left_index]
+        right = profiles[right_name].paragraphs[right_index]
+        if _paragraph_similarity_upper(left, right, q_overlap=q_overlap) >= 0.88:
+            candidates.setdefault((left_name, right_name), []).append((left_index, right_index))
+    return candidates
+
+
+def _paragraph_candidate_issues(
+    left: _CopyProfile, right: _CopyProfile, candidates: list[tuple[int, int]]
+) -> list[str]:
+    for left_index, right_index in candidates:
+        left_text = left.paragraphs[left_index].text
+        right_text = right.paragraphs[right_index].text
+        if SequenceMatcher(None, left_text, right_text, autojunk=False).ratio() >= 0.88:
+            return ["paragraph similarity >= 0.88"]
+    return []
+
+
 def validate_batch_copy(scripts: dict[str, str]) -> dict[str, dict]:
-    result = {name: {"valid": True, "issues": [], "max_cross_copy_pct": 0.0} for name in scripts}
-    names = sorted(scripts)
-    for i, left in enumerate(names):
-        for right in names[i + 1:]:
-            issues, ratio = _pair_copy_issues(scripts[left], scripts[right])
+    result = {
+        name: {"valid": True, "issues": [], "max_cross_copy_pct": 0.0}
+        for name in scripts
+    }
+    profiles = {name: _copy_profile(text) for name, text in scripts.items()}
+    body_candidates = _body_candidate_pairs(profiles)
+    paragraph_candidates = _paragraph_candidate_map(profiles)
+    names = sorted(profiles)
+    for index, left_name in enumerate(names):
+        left = profiles[left_name]
+        for right_name in names[index + 1:]:
+            right = profiles[right_name]
+            issues = _edge_copy_issues(left, right)
+            ratio = 0.0
+            if (left_name, right_name) in body_candidates:
+                body_issues, ratio = _body_block_issues(left, right)
+                issues.extend(body_issues)
+            issues.extend(
+                _paragraph_candidate_issues(
+                    left, right, paragraph_candidates.get((left_name, right_name), [])
+                )
+            )
             pct = round(ratio * 100, 2)
-            result[left]["max_cross_copy_pct"] = max(result[left]["max_cross_copy_pct"], pct)
-            result[right]["max_cross_copy_pct"] = max(result[right]["max_cross_copy_pct"], pct)
+            result[left_name]["max_cross_copy_pct"] = max(
+                result[left_name]["max_cross_copy_pct"], pct
+            )
+            result[right_name]["max_cross_copy_pct"] = max(
+                result[right_name]["max_cross_copy_pct"], pct
+            )
             if issues:
-                message = f"cross-copy with {right if left != right else left}: " + "; ".join(issues)
-                result[left]["issues"].append(message)
-                result[right]["issues"].append(f"cross-copy with {left}: " + "; ".join(issues))
+                result[left_name]["issues"].append(
+                    f"cross-copy with {right_name}: " + "; ".join(issues)
+                )
+                result[right_name]["issues"].append(
+                    f"cross-copy with {left_name}: " + "; ".join(issues)
+                )
     for item in result.values():
         item["valid"] = not item["issues"]
     return result
-
 
 def promote_candidate(topic: Path, *, force: bool = False) -> dict:
     candidate = topic / CANDIDATE_NAME
@@ -351,17 +519,24 @@ def promote_candidate(topic: Path, *, force: bool = False) -> dict:
     return {"promoted": True, "issues": [], "validation": result}
 
 
-def validate_voiceover_batch(root: Path, *, require_quality: bool = True) -> dict:
+def validate_voiceover_batch(root: Path, *, require_quality: bool = True, workers: int = 1) -> dict:
     topics = sorted(p for p in root.iterdir() if p.is_dir() and re.match(r"^\d{2}-", p.name))
     if not topics:
         return {"valid": False, "topic_count": 0, "issues": ["no topic directories"], "results": []}
+    if workers < 1 or workers > 16:
+        raise ValueError("workers must be between 1 and 16")
+    if workers == 1:
+        validations = [validate_voiceover(topic, require_quality=require_quality) for topic in topics]
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="autoyy-voiceover") as pool:
+            validations = list(pool.map(
+                lambda topic: validate_voiceover(topic, require_quality=require_quality), topics
+            ))
     rows: list[dict] = []
     scripts: dict[str, str] = {}
-    for topic in topics:
+    for topic, result in zip(topics, validations, strict=True):
         final = topic / FINAL_NAME
-        result = validate_voiceover(topic, require_quality=require_quality)
-        row = {"topic": topic.name, **result}
-        rows.append(row)
+        rows.append({"topic": topic.name, **result})
         if final.is_file() and final.stat().st_size > 0:
             scripts[topic.name] = final.read_text(encoding="utf-8-sig", errors="replace")
     copy_results = validate_batch_copy(scripts)

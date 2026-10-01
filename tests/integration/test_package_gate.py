@@ -63,7 +63,7 @@ def test_full_package_gate_passes_complete_topic(tmp_path: Path, monkeypatch) ->
     monkeypatch.setenv(ATTESTATION_ENV, "package-test-key")
     make_complete_topic(tmp_path)
     monkeypatch.setattr("autoyy.deliverables.probe_media", lambda *_a, **_k: {"duration": 10.0})
-    result = validate_root(tmp_path, ffprobe="fake")
+    result = validate_root(tmp_path, ffprobe="fake", workers=2)
     assert result["valid"]
     assert result["complete_count"] == 1
 

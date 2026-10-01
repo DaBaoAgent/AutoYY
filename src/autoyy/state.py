@@ -5,6 +5,7 @@ import json
 import os
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -104,6 +105,31 @@ def save_state(root: Path, state: dict[str, Any]) -> Path:
         return path
     finally:
         lock.unlink(missing_ok=True)
+
+
+def update_state(
+    root: Path,
+    mutation: Callable[[dict[str, Any]], None],
+    *,
+    create: bool = False,
+    retries: int = 5,
+) -> dict[str, Any]:
+    if retries < 1:
+        raise ValueError("retries must be positive")
+    last_error: OSError | None = None
+    for attempt in range(retries):
+        state = load_state(root, create=create)
+        mutation(state)
+        try:
+            save_state(root, state)
+            return state
+        except OSError as exc:
+            if "state revision conflict" not in str(exc):
+                raise
+            last_error = exc
+            if attempt + 1 < retries:
+                time.sleep(0.02 * (attempt + 1))
+    raise OSError(f"state update retries exhausted: {last_error}")
 
 
 def ensure_topic(state: dict[str, Any], topic: str) -> dict[str, Any]:

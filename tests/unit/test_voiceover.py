@@ -112,7 +112,7 @@ def test_three_topic_batch_one_failure_is_incomplete(tmp_path: Path) -> None:
     make_topic(tmp_path, "01-pass", 4500, "甲")
     make_topic(tmp_path, "02-pass", 4500, "乙")
     make_topic(tmp_path, "03-fail", 4499, "丙")
-    result = validate_voiceover_batch(tmp_path)
+    result = validate_voiceover_batch(tmp_path, workers=3)
     assert not result["valid"]
     assert result["status"] == "INCOMPLETE"
     assert result["failed_count"] >= 1
@@ -290,3 +290,39 @@ def test_tampering_after_attestation_invalidates_quality_gate(tmp_path: Path) ->
     result = validate_voiceover(topic)
     assert not result["valid"]
     assert any("signature invalid" in issue for issue in result["issues"])
+
+
+def test_cross_copy_prefilter_skips_dissimilar_full_body_comparisons(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import autoyy.voiceover as vo
+
+    calls = 0
+    original = vo._body_block_issues
+
+    def counted(left, right):
+        nonlocal calls
+        calls += 1
+        return original(left, right)
+
+    monkeypatch.setattr(vo, "_body_block_issues", counted)
+    scripts = {f"{i:02d}": chr(0x4E00 + i) * 4500 for i in range(20)}
+    result = vo.validate_batch_copy(scripts)
+    assert all(item["valid"] for item in result.values())
+    assert calls == 0
+
+
+def test_paragraph_similarity_gate_survives_shingle_prefilter() -> None:
+    import autoyy.voiceover as vo
+
+    base = "".join(chr(0x5000 + index) for index in range(210))
+    altered_parts = []
+    for index in range(0, len(base), 7):
+        altered_parts.append(base[index:index + 7])
+        altered_parts.append("¤")
+    altered = "".join(altered_parts)
+    left = vo._copy_profile(base)
+    right = vo._copy_profile(altered)
+    assert left.shingles.isdisjoint(right.shingles)
+    issues, _ = vo._pair_copy_issues(base, altered)
+    assert "paragraph similarity >= 0.88" in issues

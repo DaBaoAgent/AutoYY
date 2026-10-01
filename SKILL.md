@@ -17,7 +17,7 @@ Use `D:\自动剪辑` as the default working root. If the user does not provide 
 
 1. Determine which stages the user requested: performance audit, topic planning, source research, authorized downloads, text production, cover generation, full pipeline, resume, or audit.
 2. Record configurable inputs instead of hardcoding prior values: input data, topic count, project directory under the default working root, target platforms, duration, resolution, subtitle languages, script length and tone, and cover mode.
-3. Use a task plan for multi-topic or full-pipeline work. Resume from verified files rather than restarting.
+3. For multi-topic or full-pipeline work, begin with `python -m autoyy batch status <root>` and `batch plan <root> <stage>`. Resume from verified files rather than restarting.
 4. Ask only for decisions that materially change the result or permission scope. Never assume authorization to use browser cookies, download copyrighted media, bypass access controls, overwrite approved assets, or publish externally.
 
 ## Route to supporting skills and tools
@@ -102,9 +102,9 @@ python scripts/transcribe.py <output-root> [--manifest <manifest.csv>] `
   --ffmpeg-location "<ffmpeg-bin-dir>"
 ```
 
-- Backend `auto` prefers FunASR when installed, otherwise faster-whisper. Install the corresponding optional extra when needed. `--model-size` defaults to `medium`; choose a larger model only when the runtime budget allows it.
+- Backend `auto` is language-aware: Chinese sources prefer FunASR, while English/other or unknown-language sources prefer multilingual faster-whisper. Manifest `source_language` overrides the CLI fallback; `--language auto` is the default. Install the corresponding optional extra when needed.
 - AutoYY respects the existing Hugging Face environment. Use `--hf-endpoint` explicitly when a mirror is required; the script does not mutate the global endpoint at import time.
-- Folders that already contain a non-empty SRT are skipped — safe to rerun after an interruption; `--overwrite` forces re-transcription.
+- Folders are skipped only when the existing SRT actually validates. A malformed non-empty SRT is quarantined as `.invalid*` and regenerated; `--overwrite` still forces re-transcription.
 - Run `scripts/validate_subtitles.py` afterward to confirm the generated SRT parses and aligns with the video.
 
 ### 6. Write the Chinese voiceover
@@ -142,14 +142,14 @@ Do not pad to length. If the source cannot support the requested duration, state
 
 When a request contains two or more topic directories, quality outranks throughput:
 
-1. Build an explicit topic queue. The voiceover writer processes **one topic per worker/context** by default. Never concatenate several SRTs into one writing prompt and never produce multiple final voiceovers in one model call.
+1. Build the queue with `python -m autoyy batch plan <project-root> voiceover`, then **claim exactly one topic** using `python -m autoyy work claim <project-root> --worker-id <unique-run-id> --stage voiceover`. The lease is mandatory for multi-topic `voiceover scaffold`; the same worker cannot claim a second directory until its active lease is released. Never manually enumerate several SRTs into one writing prompt.
 2. Read the current topic's complete `字幕.srt`; summaries may navigate the source but cannot replace the full read.
-3. Write `爆款口播稿.candidate.txt`. Do not write or overwrite `爆款口播稿.txt` directly.
+3. Write `爆款口播稿.candidate.txt`. Then run `python -m autoyy voiceover scaffold <topic-folder> --lease-token <token>` so writer provenance is tied to the claimed topic. Do not write or overwrite `爆款口播稿.txt` directly.
 4. Run `vendor/blader-humanizer/SKILL.md` in Embedded mode on that candidate, then perform a source-grounded fact check and an independent semantic review in a fresh context.
 5. Create/update `<topic>/.autoyy/voiceover-quality.json`. It must bind current source/script SHA-256, use `attempt=1..3`, `humanizer.mode=embedded`, `reviewer.independent=true`, fact/reviewer coverage counts, and evidence with matching script excerpts. Supplemental non-SRT facts require `source_kind=verified_source`, `source_ref`, and `verified_at`.
 6. Evidence must be distributed through the script; a long ungrounded span is a hard failure. Numbers, dates, direct quotations, names, and causal claims may not be invented to reach the length target.
 7. Promote only through `python -m autoyy voiceover promote <topic-folder>`. The command refuses stale/missing gates and checks the candidate against sibling final scripts for cross-topic copying before creating the final file.
-8. After all topics, run `python -m autoyy voiceover validate <project-root>`. Any failed topic makes the batch `INCOMPLETE` and exit code 1. Never report overall completion because files merely exist.
+8. Keep long leases alive with `autoyy work heartbeat`; release a lease only after that topic's work is handed to the next gate, then claim the next topic. After all topics, run `python -m autoyy voiceover validate <project-root> --workers 4`. Any failed topic makes the batch `INCOMPLETE` and exit code 1. Never report overall completion because files merely exist.
 
 Hard default limits: 4,500-5,500 non-whitespace characters, at least five source-backed direct quotations when the source contains enough real dialogue, no unsupported numeric claims, no banned AI/template shells, and no duplicated long paragraphs. Cross-topic hard failures include a shared contiguous block of 80+ characters, 30+ character matching blocks totaling over 8% of the shorter script, highly similar openings/endings, or highly similar long paragraphs. Fixed required profile signatures are excluded from the copy comparison.
 

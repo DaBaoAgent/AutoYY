@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import sys
 from datetime import date
 from pathlib import Path
 
 from . import __version__
+from .batch import batch_status, stage_plan
 from .config import peer_library
 from .deliverables import validate_root
 from .doctor import run_doctor
@@ -30,6 +32,7 @@ from .voiceover import (
     promote_candidate,
     validate_voiceover_batch,
 )
+from .work import claim_work, heartbeat_work, release_work, require_active_lease, work_status
 
 
 def emit(payload: object, *, compact: bool = False) -> None:
@@ -56,7 +59,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
     if folders and not ffprobe:
         emit({"valid": False, "error": "ffprobe is required for final media validation"})
         return 2
-    result = validate_root(root, allow_empty=args.allow_empty, expected_count=args.expected_count, require_quality=not args.skip_quality_record, ffprobe=ffprobe)
+    result = validate_root(root, allow_empty=args.allow_empty, expected_count=args.expected_count, require_quality=not args.skip_quality_record, ffprobe=ffprobe, workers=args.workers)
     state = load_state(root, create=True)
     for row in result.get("results", []):
         set_stage(state, row["folder"], "package", "ready" if row["complete"] else "failed", reason="" if row["complete"] else "; ".join(row["issues"][:3]))
@@ -82,9 +85,20 @@ def cmd_publication_validate(args: argparse.Namespace) -> int:
 
 
 def cmd_voiceover_scaffold(args: argparse.Namespace) -> int:
+    topic = Path(args.topic).resolve()
     try:
-        path = create_quality_template(Path(args.topic).resolve(), voice_profile=args.voice_profile)
-    except (OSError, ValueError) as exc:
+        siblings = [p for p in topic.parent.iterdir() if p.is_dir() and p.name[:2].isdigit() and p.name[2:3] == "-"]
+        lease = None
+        if len(siblings) >= 2:
+            if not args.lease_token:
+                raise ValueError("multi-topic voiceover scaffold requires --lease-token from autoyy work claim")
+            lease = require_active_lease(topic.parent, args.lease_token, topic=topic.name, stage="voiceover")
+        path = create_quality_template(
+            topic, voice_profile=args.voice_profile,
+            writer_lease_token=args.lease_token,
+            writer_id=args.writer_id or (str(lease.get("worker_id")) if lease else None),
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
         emit({"ok": False, "error": str(exc)})
         return 2
     emit({"ok": True, "quality_file": str(path)})
@@ -109,7 +123,7 @@ def cmd_voiceover_validate(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
     if not root.is_dir():
         return 2
-    result = validate_voiceover_batch(root, require_quality=not args.skip_quality_record)
+    result = validate_voiceover_batch(root, require_quality=not args.skip_quality_record, workers=args.workers)
     state = load_state(root, create=True)
     for row in result.get("results", []):
         script = root / row["topic"] / "爆款口播稿.txt"
@@ -217,11 +231,91 @@ def cmd_state_force(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_batch_status(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        emit({"ok": False, "error": "root does not exist"}, compact=args.json)
+        return 2
+    emit(batch_status(root), compact=args.json)
+    return 0
+
+
+def cmd_batch_plan(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        emit({"ok": False, "error": "root does not exist"}, compact=args.json)
+        return 2
+    try:
+        result = stage_plan(root, args.stage)
+    except ValueError as exc:
+        emit({"ok": False, "error": str(exc)}, compact=args.json)
+        return 2
+    emit(result, compact=args.json)
+    return 0
+
+
+def cmd_work_claim(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    try:
+        result = claim_work(
+            root, worker_id=args.worker_id, stage=args.stage,
+            lease_seconds=args.lease_seconds, topic=args.topic,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        emit({"ok": False, "error": str(exc)}, compact=args.json)
+        return 2
+    emit(result, compact=args.json)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_work_heartbeat(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        emit({"ok": False, "error": "root does not exist"}, compact=args.json)
+        return 2
+    result = heartbeat_work(root, args.token, lease_seconds=args.lease_seconds)
+    emit(result, compact=args.json)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_work_release(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        emit({"ok": False, "error": "root does not exist"}, compact=args.json)
+        return 2
+    result = release_work(root, args.token)
+    emit(result, compact=args.json)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_work_status(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        emit({"ok": False, "error": "root does not exist"}, compact=args.json)
+        return 2
+    emit(work_status(root), compact=args.json)
+    return 0
+
+
 def cmd_transcribe(args: argparse.Namespace) -> int:
     command = [args.root]
     if args.manifest:
         command += ["--manifest", args.manifest]
-    command += ["--backend", args.backend]
+    command += [
+        "--backend", args.backend, "--language", args.language,
+        "--model-size", args.model_size, "--device", args.device,
+        "--beam-size", str(args.beam_size), "--ffmpeg-timeout", str(args.ffmpeg_timeout),
+    ]
+    if args.ffmpeg_location:
+        command += ["--ffmpeg-location", args.ffmpeg_location]
+    if args.hf_endpoint:
+        command += ["--hf-endpoint", args.hf_endpoint]
+    if args.no_vad:
+        command.append("--no-vad")
+    if args.overwrite:
+        command.append("--overwrite")
+    if args.dry_run:
+        command.append("--dry-run")
     return transcribe_main(command)
 
 
@@ -241,6 +335,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--expected-count", type=int)
     validate.add_argument("--skip-quality-record", action="store_true")
     validate.add_argument("--ffprobe")
+    validate.add_argument("--workers", type=int, choices=range(1, 17), default=1)
     validate.set_defaults(func=cmd_validate)
 
     publication = sub.add_parser("publication")
@@ -254,6 +349,8 @@ def build_parser() -> argparse.ArgumentParser:
     scaffold = voice_sub.add_parser("scaffold")
     scaffold.add_argument("topic")
     scaffold.add_argument("--voice-profile", choices=["default", "laorou"], default="default")
+    scaffold.add_argument("--lease-token")
+    scaffold.add_argument("--writer-id")
     scaffold.set_defaults(func=cmd_voiceover_scaffold)
     attest = voice_sub.add_parser("attest")
     attest.add_argument("topic")
@@ -263,6 +360,7 @@ def build_parser() -> argparse.ArgumentParser:
     voice_validate = voice_sub.add_parser("validate")
     voice_validate.add_argument("root")
     voice_validate.add_argument("--skip-quality-record", action="store_true")
+    voice_validate.add_argument("--workers", type=int, choices=range(1, 17), default=1)
     voice_validate.set_defaults(func=cmd_voiceover_validate)
     promote = voice_sub.add_parser("promote")
     promote.add_argument("topic")
@@ -317,10 +415,52 @@ def build_parser() -> argparse.ArgumentParser:
     state_force.add_argument("--reason")
     state_force.set_defaults(func=cmd_state_force)
 
+    batch = sub.add_parser("batch")
+    batch_sub = batch.add_subparsers(dest="batch_command", required=True)
+    batch_status_parser = batch_sub.add_parser("status")
+    batch_status_parser.add_argument("root")
+    batch_status_parser.set_defaults(func=cmd_batch_status)
+    batch_plan_parser = batch_sub.add_parser("plan")
+    batch_plan_parser.add_argument("root")
+    batch_plan_parser.add_argument("stage", choices=["source", "subtitle", "voiceover", "publication", "cover", "package"])
+    batch_plan_parser.set_defaults(func=cmd_batch_plan)
+
+    work = sub.add_parser("work")
+    work_sub = work.add_subparsers(dest="work_command", required=True)
+    work_claim = work_sub.add_parser("claim")
+    work_claim.add_argument("root")
+    work_claim.add_argument("--worker-id", required=True)
+    work_claim.add_argument("--stage", choices=["source", "subtitle", "voiceover", "publication", "cover", "package"], default="voiceover")
+    work_claim.add_argument("--topic")
+    work_claim.add_argument("--lease-seconds", type=int, default=1800)
+    work_claim.set_defaults(func=cmd_work_claim)
+    work_heartbeat = work_sub.add_parser("heartbeat")
+    work_heartbeat.add_argument("root")
+    work_heartbeat.add_argument("token")
+    work_heartbeat.add_argument("--lease-seconds", type=int, default=1800)
+    work_heartbeat.set_defaults(func=cmd_work_heartbeat)
+    work_release = work_sub.add_parser("release")
+    work_release.add_argument("root")
+    work_release.add_argument("token")
+    work_release.set_defaults(func=cmd_work_release)
+    work_status_parser = work_sub.add_parser("status")
+    work_status_parser.add_argument("root")
+    work_status_parser.set_defaults(func=cmd_work_status)
+
     transcribe = sub.add_parser("transcribe")
     transcribe.add_argument("root")
     transcribe.add_argument("--manifest")
     transcribe.add_argument("--backend", choices=["auto", "funasr", "whisper"], default="auto")
+    transcribe.add_argument("--language", default="auto")
+    transcribe.add_argument("--model-size", default="medium")
+    transcribe.add_argument("--device", default="cpu")
+    transcribe.add_argument("--beam-size", type=int, default=5)
+    transcribe.add_argument("--ffmpeg-location")
+    transcribe.add_argument("--ffmpeg-timeout", type=int, default=7200)
+    transcribe.add_argument("--hf-endpoint")
+    transcribe.add_argument("--no-vad", action="store_true")
+    transcribe.add_argument("--overwrite", action="store_true")
+    transcribe.add_argument("--dry-run", action="store_true")
     transcribe.set_defaults(func=cmd_transcribe)
     return parser
 
@@ -328,5 +468,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     configure_utf8_stdio()
     parser = build_parser()
-    args = parser.parse_args(argv)
+    values = list(sys.argv[1:] if argv is None else argv)
+    if "--json" in values and values[0:1] != ["--json"]:
+        values.remove("--json")
+        values.insert(0, "--json")
+    args = parser.parse_args(values)
     return args.func(args)

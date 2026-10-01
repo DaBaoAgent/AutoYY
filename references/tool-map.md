@@ -25,7 +25,7 @@
 | 3. Source research | Find direct YouTube videos, verify duration, views, resolution, subtitles, match, channel, date, and rights note | Web search/open, browser inspection, metadata-only `yt-dlp` checks | In-app Browser; Chrome only for explicitly authorized signed-in state | Verified 30+ minute source rows |
 | 4. Report and manifest | Translate titles, write the topic report, and create the UTF-8 download manifest | File editing, CSV tooling | AutoYY, Spreadsheets for large manifests | Approved report and manifest |
 | 5. Authorized download | Plan, download, merge HD media, select subtitles, normalize filenames, and resume partials | PowerShell, `scripts/download_from_manifest.ps1`, `yt-dlp`, `ffmpeg`, optional `aria2c`; Python worker-pool parallelism behind the PowerShell wrapper | Chrome only when cookies are explicitly authorized | One playable HD source and one SRT per topic, or a blocked reason |
-| 5.5 ASR fallback | When a video has no usable SRT, transcribe locally to `字幕.srt` | `scripts/transcribe.py` (FunASR preferred, faster-whisper built-in), `ffmpeg` audio extraction | AutoYY | A generated SRT per subtitless video, or a documented blocked reason |
+| 5.5 ASR fallback | When a video has no usable SRT, transcribe locally to `字幕.srt` | `autoyy transcribe` / `scripts/transcribe.py` (language-aware backend routing), `ffmpeg` audio extraction | AutoYY | A validated generated SRT per subtitless or malformed-subtitle video, or a documented blocked reason |
 | 6. Voiceover writing | Read the full transcript, draft factual spoken Chinese, run the mandatory Humanizer Embedded-mode pass, then recheck facts and oral rhythm | Filesystem text reading, reliable web sources for needed context, bundled `vendor/blader-humanizer/SKILL.md`, `assets/term-glossary.csv` | AutoYY, Humanizer | Pure 4,500–5,500-character final voiceover with no production labels, audit notes, fabricated details, or obvious AI patterns |
 | 7. Publication information | Consult the peer hit library, then write or recursively refresh a factual Douyin-style title and five tags; feed post-publish results back | File editing, PowerShell for safe bulk rewrites, `scripts/peer_hit_library.py`, `scripts/validate_publication_info.py`, `rg` for legacy fields | AutoYY | Exactly two lines; title ≤25 characters; exactly five hashtags; library updated with new evidence |
 | 8. Cover production | Create matching 3:4 and 4:3 topic covers or 1:1 and 4:3 collection covers | Image generation, image viewer, dimension inspection, approved assets | Imagegen | Exact Chinese text, approved typography, correct ratios |
@@ -51,7 +51,7 @@
 - **`ffmpeg`:** Merge video/audio, normalize playable outputs, and extract 16k mono audio for ASR.
 - **`aria2c`:** Optional multi-connection download acceleration (`winget install aria2.aria2`); auto-detected by the download script.
 - **`scripts/download_from_manifest.ps1`:** Execute resumable downloads from the approved manifest (validated resume, aria2c, Python worker-pool parallel rows).
-- **`scripts/transcribe.py`:** Local ASR fallback when a video has no subtitle (FunASR preferred, faster-whisper built-in, explicit/respected Hugging Face endpoint configuration, skips folders that already have SRT).
+- **`scripts/transcribe.py`:** Thin local ASR compatibility entry. `auto` prefers FunASR for Chinese and multilingual faster-whisper for other/unknown languages; existing SRT is reused only when it validates, otherwise it is safely quarantined and regenerated.
 - **`scripts/validate_subtitles.py`:** Check SRT syntax, time-axis order, and subtitle-video alignment drift.
 - **`scripts/peer_hit_library.py`:** Learn from and evolve peer hit publication titles/tags (`--patterns` / `--list` / `--add` / `--import` / `--template`).
 - **`scripts/validate_publication_info.py`:** Recursively validate strict two-line publication metadata.
@@ -66,10 +66,12 @@ The preferred machine-readable command surface is `python -m autoyy`. Compatibil
 
 - `autoyy doctor`: dependency/assets/work-root preflight; never installs or changes the system.
 - `autoyy download`: validated manifest/path handling, resumable artifacts, Python worker-pool parallelism, and correct 0/1/2 exit semantics. `scripts/download_from_manifest.ps1` is a thin Windows wrapper.
+- `autoyy batch status|plan`: machine-readable batch inventory and dependency-aware runnable queue.
+- `autoyy work claim|heartbeat|release|status`: atomic per-topic leases for agent isolation, crash recovery, and one-topic-per-worker enforcement.
 - `autoyy voiceover scaffold|promote|validate`: structured source/script hash gate for Humanizer, fact verification, independent review, evidence coverage, and cross-topic copy checks.
 - `autoyy publication validate`: canonical two-line publication validator and state update.
 - `autoyy validate`: final package gate; a file's existence alone never establishes completion.
 - `autoyy peer patterns`: project-local evidence statistics with platform/category/date filtering and sample confidence.
 - `autoyy state show|recover|approve|force`: inspect/recover state, explicitly approve a ready stage, or reset one stage to pending while staling dependents.
 
-For multi-topic voiceover work, the orchestration layer may parallelize unrelated non-writing stages, but each voiceover writer gets one topic/source context at a time by default. Batch completion is derived only from per-topic gate results.
+For multi-topic voiceover work, the orchestration layer may parallelize unrelated non-writing stages, while the work-lease layer enforces one active topic/source context per voiceover worker. Batch completion is derived only from per-topic gate results.

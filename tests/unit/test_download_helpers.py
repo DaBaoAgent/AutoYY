@@ -125,3 +125,54 @@ def test_trace_redacts_proxy_and_cookie_values() -> None:
     assert "secret" not in " ".join(redacted)
     assert "chrome" not in " ".join(redacted)
     assert redacted.count("<redacted>") == 2
+
+
+def test_download_checkpoints_completed_rows_before_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = tmp_path / "manifest.csv"
+    import csv
+
+    from autoyy.manifest import FIELDS
+
+    rows = []
+    for index in (1, 2):
+        item = {field: "" for field in FIELDS}
+        item.update({
+            "id": f"{index:02d}",
+            "folder_name": f"{index:02d}-topic",
+            "url": f"https://www.youtube.com/watch?v={index}",
+        })
+        rows.append(item)
+    with manifest.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+    output = tmp_path / "out"
+    calls = 0
+
+    def fake_process(row, options, _yt_dlp, _ffprobe):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise KeyboardInterrupt
+        topic = options.output_root / row.folder_name
+        topic.mkdir(parents=True, exist_ok=True)
+        (topic / "高清源视频.mp4").write_bytes(b"video")
+        (topic / "字幕.srt").write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nok\n", encoding="utf-8"
+        )
+        return {
+            "folder_name": row.folder_name, "url": row.url,
+            "video": True, "subtitle": True, "subtitle_language": "en",
+            "attempts": 1, "status": "complete", "error": "",
+        }
+
+    monkeypatch.setattr(dl, "_executable", lambda _value: "fake-ytdlp")
+    monkeypatch.setattr(dl, "_ffprobe_path", lambda _value: "fake-ffprobe")
+    monkeypatch.setattr(dl, "process_row", fake_process)
+    code, result = dl.run_download(dl.DownloadOptions(manifest, output))
+    assert code == 1 and result["interrupted"]
+    assert (output / "下载状态.csv").is_file()
+    state = json.loads((output / ".autoyy" / "state.json").read_text(encoding="utf-8"))
+    assert state["topics"]["01-topic"]["stages"]["subtitle"]["status"] == "ready"

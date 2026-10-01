@@ -119,3 +119,25 @@ def test_file_fingerprint_tracks_content_not_only_metadata(tmp_path: Path) -> No
     after = file_fingerprint(path)
     assert before.startswith("sha256:")
     assert before != after
+
+
+def test_update_state_retries_revision_conflict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import autoyy.state as state_module
+
+    original = state_module.save_state
+    calls = 0
+
+    def flaky(root, state):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("state revision conflict: expected 0, current 1")
+        return original(root, state)
+
+    monkeypatch.setattr(state_module, "save_state", flaky)
+    state_module.update_state(
+        tmp_path, lambda state: state_module.set_stage(state, "01-a", "source", "ready"), create=True
+    )
+    loaded = state_module.load_state(tmp_path)
+    assert loaded["topics"]["01-a"]["stages"]["source"]["status"] == "ready"
+    assert calls == 2
