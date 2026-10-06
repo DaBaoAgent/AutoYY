@@ -1,27 +1,65 @@
 # AutoYY
 
-AutoYY is a Windows-first Codex/Hermes/Workbuddy workflow for producing traceable Chinese documentary-explainer content packages from performance data and authorized long-form source media.
+<!-- README-PROMO:START -->
+<p align="center">
+  <img src="assets/readme/hero.webp" alt="AutoYY：纪录片解说全自动流水线" width="100%" />
+  <img src="assets/readme/workflow.webp" alt="AutoYY 工作流：选题、下载、写稿、配音、交付五个阶段" width="100%" />
+  <img src="assets/readme/beginner.webp" alt="AutoYY 新手上手：装依赖、配密钥、开始复刻" width="100%" />
+</p>
+<!-- README-PROMO:END -->
 
-It combines topic/source planning, resumable media/subtitle preparation, SRT-first voiceover writing, deterministic batch quality gates, publication metadata, cover workflows, stateful resume, and final package validation.
+<h3 align="center">YouTube 纪录片解说自动化技能 · 从选题到中文口播稿与配音</h3>
 
-## Why this version is strict
+<p align="center">
+  <img src="https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white" alt="Platform">
+  <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/Agent%20Skill-Codex%20%7C%20Claude%20Code%20%7C%20Hermes-6B4EFF" alt="Agent Skill">
+  <img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="License">
+</p>
 
-Multi-topic writing must not trade quality for throughput. AutoYY treats every topic as an independent unit: one source context, one candidate script, one Humanizer pass, one fact check, one independent reviewer result, and one deterministic gate. A batch is complete only when every topic passes.
+> **AutoYY** 是一个面向纪录片二创博主的工作流技能：输入 YouTube 长视频选题，自动完成**素材与字幕下载 → 中文口播稿撰写 → 去 AI 味 → 事实核验 → 独立审校 → 封面生成 → 配音合成**，产出可发布的内容包。
+>
+> 让 AI 帮你跑完纪录片二创最耗时的部分，你只负责最后把关和发布。
 
-The final `爆款口播稿.txt` should not be written directly. Writers create `爆款口播稿.candidate.txt`; AutoYY promotes it only after the current source/script hashes and all required quality gates pass.
+---
 
-## Requirements
+## 它能做什么
 
-- Windows 10/11 is the primary supported runtime.
-- Python 3.11+.
-- `yt-dlp`, `ffmpeg`, and `ffprobe` for media workflows.
-- Node or Deno is recommended for current YouTube extraction.
-- aria2 is optional for download acceleration.
-- FunASR or faster-whisper is optional for local subtitle fallback.
+| 阶段 | 产出 | 说明 |
+|---|---|---|
+| 📊 选题规划 | 选题候选 + 表现数据 | 从榜单与话题调研中筛选可做的长视频 |
+| ⬇️ 素材准备 | 视频 + 字幕（SRT） | `yt-dlp` 自动下载，支持断点续跑与防封策略 |
+| ✍️ 口播稿 | `爆款口播稿.txt` | 基于原片字幕的第三人称中文解说稿 |
+| 🧹 AI 去味 | 自然化改稿 | 内置 Humanizer，消除 AI 腔调且零事实漂移 |
+| ✅ 质量门禁 | 质量记录 + 校验结果 | 事实核验、独立审校、批量质量闸门 |
+| 🖼️ 封面 | 3:4 / 4:3 封面提示词与成图 | 严格字数校验，拒绝无效标题 |
+| 🎙️ 配音 | 配音稿 + 音频 | 无缝对接 GPT-SoVITS 等 TTS 引擎 |
+| 📦 交付 | 完整发布包 | 成稿、配音稿、封面、发布信息一次产出 |
 
-Set `AUTOYY_WORK_ROOT` to choose the default project-output root. On Windows the fallback is `D:\自动剪辑`.
+---
 
-## Install for development
+## 为什么这个版本更严格
+
+多选题批量写作不能为了产能牺牲质量。AutoYY 把**每个选题当成独立单元**：一份源上下文、一份候选稿、一轮 Humanizer、一次事实核验、一个独立审校结果、一道确定性闸门。**只有所有选题都通过，这一批才算完成。**
+
+最终稿 `爆款口播稿.txt` **不允许被直接写出**。写手只能产出 `爆款口播稿.candidate.txt`，只有当前源文件/稿件哈希与全部质量闸门都通过后，AutoYY 才会把它提升为正式稿。
+
+---
+
+## 环境要求
+
+- **Windows 10/11** 为主要支持平台
+- **Python 3.11+**
+- `yt-dlp`、`ffmpeg`、`ffprobe`（媒体流程必需）
+- 建议安装 Node 或 Deno（用于新版 YouTube 提取）
+- `aria2` 可选，用于加速下载
+- `FunASR` 或 `faster-whisper` 可选，用于本地字幕回退识别
+
+设置 `AUTOYY_WORK_ROOT` 可指定默认项目输出根目录；Windows 下回退到 `D:\自动剪辑`。
+
+---
+
+## 安装
 
 ```powershell
 git clone https://github.com/DaBaoAgent/AutoYY.git
@@ -30,91 +68,98 @@ python -m pip install -e ".[dev]"
 python -m autoyy doctor
 ```
 
-For Codex Skill installation, clone or junction the repository into the Codex skills directory. Keep production outputs outside the skill repository.
+作为 Agent Skill 安装时，把仓库克隆或软链到对应 Agent 的 skills 目录即可。**生产产物请放在技能仓库之外**，避免污染仓库。
 
-## Stable CLI
+---
+
+## 快速开始
 
 ```powershell
+# 环境自检
 python -m autoyy doctor
+
+# 查看可用能力与资源
 python -m autoyy resources
+
+# 校验既有产物并规划运行
 python -m autoyy runtime reconcile <project-root> --dry-run
 python -m autoyy runtime plan <project-root> --manifest <manifest.csv>
+
+# 无人值守运行（自动执行确定性阶段）
 python -m autoyy runtime run <project-root> --manifest <manifest.csv>
-python -m autoyy supervisor start <project-root> --manifest <manifest.csv>
+
+# 前台守护进程（含心跳、重启恢复、重试台账）
 python -m autoyy supervisor run <project-root> --manifest <manifest.csv> --stop-when-idle
 python -m autoyy supervisor status <project-root>
+
+# 查看历史性能信号（p50 / p95 / 失败率）
 python -m autoyy history <project-root>
-python -m autoyy queue set <project-root> <topic> --priority 5 --sla-minutes 120
-python -m autoyy runtime soak --topics 100 --operations 1800 --workers 8 --fault-rate 0.08 --crash-rate 0.05
-python -m autoyy runtime soak --topics 500 --operations 6000 --workers 8 --fault-rate 0.05 --crash-rate 0.02
-python -m autoyy profile <project-root>
-python -m autoyy diagnose <project-root>
-python -m autoyy schedule <project-root> --capabilities source,subtitle,voiceover --strategy finish-first
-python -m autoyy validate <project-root> --workers 4
-python -m autoyy batch inventory <project-root>
-python -m autoyy batch status <project-root>
+
+# 批量状态与调度
 python -m autoyy batch plan <project-root> voiceover
-python -m autoyy work claim <project-root> --worker-id <run-id> --stage auto --capabilities voiceover,publication --strategy finish-first
-python -m autoyy publication validate <project-root>
-python -m autoyy voiceover scaffold <topic-folder> --lease-token <token>
+python -m autoyy work claim <project-root> --worker-id <run-id> --stage voiceover
 python -m autoyy voiceover validate <project-root> --workers 4
-python -m autoyy voiceover promote <topic-folder>
-python -m autoyy peer patterns --platform douyin
-python -m autoyy state show <project-root>
-python -m autoyy state approve <project-root> <topic> voiceover --reason "reviewed"
-python -m autoyy state force <project-root> <topic> <stage> --reason "rerun requested"
+
+# 全链路校验
+python -m autoyy validate <project-root> --workers 4
+python -m autoyy publication validate <project-root>
 ```
 
-`autoyy profile` reports real inventory size, discovery/state timing, ignored legacy topic candidates, and historical per-topic latency from local run events. `autoyy diagnose` summarizes recent structured error codes, active leases, failed/blocked stages, and actionable hints. `autoyy schedule` is read-only; `work claim --stage auto` applies the same scheduler and creates the atomic lease.
+`--json` 可放在子命令前后任意位置，输出便于 Agent 解析的紧凑 JSON。
 
-Scheduler strategies are `finish-first` (default: finish partially completed topics), `repair-first` (prioritize stale/failed work), and `source-first` (feed upstream stages). Stage concurrency budgets prevent an agent swarm from overloading download/ASR/cover resources. Queue policy adds bounded explicit priority plus SLA/deadline urgency, while wait-time aging grows continuously so old runnable work eventually outranks a stream of newer work. `autoyy history` derives p50/p95/failure signals from local events; the supervisor uses those signals conservatively to retune download/ASR workers without changing quality thresholds.
+---
 
-`autoyy runtime reconcile` validates existing video/SRT artifacts against disk before resuming older projects; `runtime run` performs this reconciliation once at startup. `autoyy supervisor run` adds a persistent foreground supervisor session with heartbeat, single-supervisor locking, restart recovery, retry ledgers, periodic history-based retuning, and an operator stop flag. `autoyy supervisor start` launches the same supervisor detached from the current terminal and is controlled with `supervisor status|stop`; it refuses proxy/cookie parameters rather than exposing them in a background process command line. A crashed/rebooted supervisor can be started again; interrupted `running` stages are recovered and the new session records its prior session/generation instead of pretending to be a clean first run. `autoyy runtime` is the unattended control plane. Runtime completion is conservative: active leases report `waiting_active`, quality/other blocked stages report `blocked_work`, missing operator input reports `waiting_input`, and lease-bound editorial/visual work reports `waiting_external`; none of these states are reported as complete. The default pass budget scales with topic count; an ASR topic that fails is isolated for the remainder of that run so other topics can continue, then becomes retryable again on the next run. It may automatically execute only deterministic machine stages (`source`, `subtitle`, `package`). It stops at `voiceover`, `publication`, or `cover` with `waiting_external`; those stages remain lease-bound Agent/human work and keep their existing provenance/quality gates. Runtime planning fails closed on ignored legacy topic directories or a missing manifest unless the operator explicitly resolves/accepts the condition.
+## 批量口播稿质量契约
 
-`--json` may be placed before or after the subcommand for agent-friendly compact output. The compatibility scripts under `scripts/` remain available for existing automation. Exit-code contract is `0=success`, `1=work completed with failed/incomplete items`, and `2=invalid input, missing required dependency, or unusable state/schema`.
+两个及以上选题时，**一个选题对应一个 worker/上下文**是机器强制的租约流程，不只是提示词约定：
 
-## Batch voiceover quality contract
+```powershell
+python -m autoyy batch plan <project-root> voiceover
+python -m autoyy work claim <project-root> --worker-id <run-id> --stage voiceover
+```
 
-For two or more topics, one topic per worker/context is now a machine-enforced lease workflow, not just a prompt convention. Run `autoyy batch plan`, then `autoyy work claim`; a worker with an active lease receives the same topic again instead of consuming another directory. Do not concatenate several SRTs into one prompt.
+持有活跃租约的 worker 再次被分配时仍会拿到同一个选题，不会占用新的目录。**禁止把多个 SRT 拼接成一份提示词。**
 
-Per topic:
+每个选题的流程：
 
-Quality records use `attempt=1..3`, `humanizer.mode=embedded`, `reviewer.independent=true`, and fact/reviewer coverage counts. A third failed attempt becomes `blocked_quality` rather than triggering an unlimited rewrite loop.
+1. 领取一个选题并保持租约心跳
+2. 通读该选题完整的 `字幕.srt`（摘要仅供导航）
+3. 写 `爆款口播稿.candidate.txt`（不是最终文件名），并生成质量脚手架
+4. 以 Embedded 模式运行内置的 `blader-humanizer`
+5. 执行源锚定的事实核验与独立语义审校
+6. 写入 `.autoyy/voiceover-quality.json`（含当前源/稿 SHA-256、全读标记、各环节通过状态与证据条目）
+7. 执行 `python -m autoyy voiceover promote <topic-folder>` 提升为正式稿
+8. 提交审校完成后再释放租约，领取下一个选题
 
-1. Claim exactly one topic with `python -m autoyy work claim <root> --worker-id <run-id> --stage voiceover`; keep the returned lease token alive with `work heartbeat` during long runs.
-2. Read that topic's full `字幕.srt`; summaries are navigation aids only.
-3. Write `爆款口播稿.candidate.txt`, not the final filename, then create the quality scaffold with the matching `--lease-token`.
-4. Run the bundled `vendor/blader-humanizer/SKILL.md` in Embedded mode on that candidate.
-5. Run source-grounded fact verification and an independent semantic reviewer.
-6. Create/update `.autoyy/voiceover-quality.json` with the current source/script SHA-256 values, `srt_full_read=true`, Humanizer/fact/reviewer pass state, and evidence entries containing both `source_text` and the corresponding `script_excerpt`.
-7. Run `python -m autoyy voiceover promote <topic-folder>`.
-8. Release the lease only after the topic has been submitted/reviewed, then claim the next topic. After all topics, run `python -m autoyy voiceover validate <project-root> --workers 4`.
+质量闸门会校验：非空白字符 4500–5500、至少 5 处源自素材的直接引用、数值型论断有据、证据锚点覆盖率、AI/模板化写法黑名单、重复段落检测，以及**跨选题雷同检测**。任一选题失败，整批标记 `INCOMPLETE` 并返回退出码 1。
 
-The gate enforces 4,500–5,500 non-whitespace characters by default, at least five source-backed direct quotations, source-backed numeric claims, evidence-anchor coverage, banned AI/template-pattern checks, duplicate-paragraph checks, and cross-topic copy/template detection. One failed topic makes the batch `INCOMPLETE` and returns exit code 1. Verified supplemental facts outside the SRT must be recorded as `source_kind=verified_source` evidence with a source reference and verification date.
+---
 
-Cross-topic hard failures include a shared contiguous block of 80+ characters, matching blocks of 30+ characters totaling more than 8% of the shorter script, highly similar openings/endings, or highly similar long paragraphs.
+## 断点状态
 
-## Resume state
+每个生产项目可包含 `.autoyy/state.json`，记录各阶段状态与源文件、字幕、口播稿、发布信息、封面、打包校验的非敏感指纹。上游指纹变化会把依赖的已就绪阶段标记为过期；状态文件损坏会被**报告而非静默替换**。已就绪阶段可显式批准，强制或修改上游指纹会撤销相关批准。
 
-Each production project may contain `.autoyy/state.json`. It records stage status and non-secret fingerprints for source, subtitle, voiceover, publication, cover, and package validation. Changing an upstream fingerprint marks dependent ready stages stale. A corrupted state file is reported rather than silently replaced. Ready stages can be explicitly approved; forcing or changing an upstream fingerprint revokes affected approvals and marks dependents stale.
+---
 
-The user evidence library also defaults to the project `.autoyy/peer-hit-library.csv`; the tracked asset is only a seed/template. Normal use therefore does not dirty the skill repository.
+## 性能与可观测性
 
-## Performance and observability
+长时间下载/ASR 工作会把结构化事件追加到 `<project>/.autoyy/events.jsonl`：本地存储、10 MiB 轮转、包含 run ID、选题/阶段状态、耗时与稳定错误码。这是**本地日志，不是远程遥测**。
 
-Long-running download/ASR work appends local structured events to `<project>/.autoyy/events.jsonl`. The log is local-only, rotates at 10 MiB, includes run IDs, topic/stage status, elapsed time, and stable error codes, and is consumed by `profile`/`diagnose`. It is not remote telemetry.
+- 大媒体文件使用采样指纹（大小 + 首/中/尾 SHA-256），不再整文件重读
+- 下载默认与字幕发现重叠执行
+- Worker 并发度自适应：出现大量可重试的网络/限流失败时自动降档，稳定后逐步回升
+- `transcribe --device auto` 仅在有可用 NVIDIA GPU 时选 CUDA，CUDA/CUDNN/OOM 失败自动回退 CPU
 
-Large media files use a sampled state fingerprint (size plus beginning/middle/end SHA-256 samples) after ffprobe verification instead of rereading multi-gigabyte media end to end. Text and small files still use full SHA-256. Download overlaps subtitle discovery with video transfer by default. Worker concurrency is adaptive by default: a wave with substantial retryable network/rate-limit failures reduces the next wave, then stable waves recover toward the requested worker count. Use `--fixed-workers` only for troubleshooting; `--rate-limit` adds an explicit yt-dlp bandwidth ceiling. Command-level retries use bounded exponential backoff and stable failure classes.
+---
 
-Faster-whisper reads media directly and does not require an intermediate WAV. FunASR still uses ffmpeg audio extraction. `transcribe --device auto` chooses CUDA only when a usable NVIDIA GPU is visible; otherwise it uses CPU. A CUDA/CUDNN/OOM failure falls back to CPU for that topic instead of losing the batch. `transcribe --workers 1..4` remains bounded to avoid accidental RAM/VRAM exhaustion. Runtime also auto-sizes download/ASR/package workers from detected CPU, RAM, and GPU capacity. Final package validation defaults to four workers based on the recorded workload benchmark.
+## 封面工作流
 
-## Cover workflows
+- `gen_jimeng_cover_prompts.py`：生成严格的 3:4 与 4:3 外部生图提示词，标题必须正好 6+8 字，否则拒绝
+- `build_topic_covers_from_video.py`：本地确定性回退方案，需显式提供封面文案、Pillow、ffmpeg/ffprobe 与字体
 
-`gen_jimeng_cover_prompts.py` creates strict 3:4 and 4:3 external-generation prompts and rejects titles that are not exactly 6+8 characters. Existing prompts/covers are not overwritten without `--force`.
+---
 
-`build_topic_covers_from_video.py` is the local deterministic fallback. It requires explicit topic cover text, Pillow, ffmpeg/ffprobe, and caller-provided fonts. It does not infer copy from historical folder names.
-
-## Testing
+## 测试
 
 ```powershell
 python -m compileall -q scripts src
@@ -124,12 +169,24 @@ python -m ruff check .
 git diff --check
 ```
 
-CI runs on Windows with Python 3.11 and 3.12 and exercises the PowerShell compatibility entry plus parallel fake-download integration without depending on live YouTube access.
+CI 在 Windows + Python 3.11/3.12 上运行，且不依赖实时 YouTube 访问。
 
-## Troubleshooting
+---
 
-Run `python -m autoyy doctor` first. Missing optional ASR backends or aria2 do not block unrelated stages. A failed project stage should be repaired and resumed instead of forcing a ready status or deleting approved outputs.
+## 常见问题
 
-## License
+先跑 `python -m autoyy doctor`。缺少可选 ASR 后端或 aria2 不会阻塞无关阶段。失败的项目阶段应**修复后断点续跑**，不要强行改成就绪状态或删除已批准的产物。
 
-AutoYY is released under the MIT License. Bundled third-party code keeps its own license notice; see `vendor/blader-humanizer/LICENSE`.
+---
+
+## 贡献与许可
+
+欢迎 Issue 与 Pull Request。
+
+本项目以 [MIT License](LICENSE) 发布。内置第三方代码保留各自的许可声明，详见 `vendor/blader-humanizer/LICENSE`。
+
+---
+
+<p align="center">
+  <sub>Made with ❤️ by <a href="https://github.com/DaBaoAgent">Dabao</a></sub>
+</p>
