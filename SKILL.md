@@ -131,6 +131,14 @@ Voice profile is explicit, never inferred across a batch:
 - `default`: follow `references/content-style.md`, including third-person narrator rules.
 - `laorou`: first read `laorou/SKILL.md` and its style guide, then run `python -m autoyy voiceover scaffold <topic-folder> --voice-profile laorou`. This profile overrides narrator perspective only; source grounding, Humanizer, evidence, reviewer, length, anti-copy, and promotion gates remain mandatory.
 
+**Non-Chinese subtitle source (English SRT) — gate traps:** the machine gate compares every quoted string against the normalized SRT and only accepts Arabic digits as numbers.
+
+- Keep every quote verbatim in the source language (English) and at most 120 characters, so pick short lines; `DIRECT_QUOTE_RE` cannot match a longer quote, and a translated quote fails as `direct quotes not found in source`.
+- Never wrap Chinese prose in quotes. A quoted Chinese term (even 4 characters, e.g. 「指令装载」) is extracted as a quote and fails the same check. Use plain text or an unquoted description instead.
+- Write ordinary quantities as Chinese numerals. `NUMBER_RE` only matches `\d+`, so Chinese numerals never need evidence; every Arabic digit left in the script must either appear in the SRT or be covered by an evidence item with `source_kind="verified_source"` plus `source_ref` and `verified_at`.
+- External facts stay citable as Chinese numerals with `verified_source` evidence, which keeps a short source video able to support a 4,500-5,500 character script.
+- Quotes that span two SRT cues still match after whitespace normalization; verify the whole script with `validate_voiceover(topic, script_path=topic/"爆款口播稿.candidate.txt")` before attesting, since `promote` refuses a missing HMAC attestation (`AUTOYY_QUALITY_ATTESTATION_KEY`, one key per operator machine, `.env` is gitignored).
+
 After drafting:
 
 1. Keep the first draft under a versioned filename; do not promote it to `爆款口播稿.txt` yet.
